@@ -1,5 +1,5 @@
 // Package cli wires the git-subsync cobra commands. Business logic lives in
-// the auth and gdrive packages so future commands can reuse it.
+// the auth, gdrive, repo, state and syncer packages.
 package cli
 
 import (
@@ -25,6 +25,10 @@ func NewRootCmd() *cobra.Command {
 	root.CompletionOptions.DisableDefaultCmd = true
 
 	root.AddCommand(
+		newAddCmd(),
+		newSyncCmd(),
+		newListCmd(),
+		newRemoveCmd(),
 		newLoginCmd(),
 		newLogoutCmd(),
 		newWhoamiCmd(),

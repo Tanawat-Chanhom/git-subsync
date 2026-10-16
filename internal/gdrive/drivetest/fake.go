@@ -279,7 +279,7 @@ func (f *Fake) hook(op, name string) error {
 // add stores a new item; f.mu must be held.
 func (f *Fake) add(parentID string, file gdrive.File, content []byte, by string) string {
 	f.nextID++
-	file.ID = fmt.Sprintf("id%03d", f.nextID)
+	file.ID = fmt.Sprintf("1fakeDriveID%021d", f.nextID) // shaped like a real ID
 	it := &item{file: file, parent: parentID}
 	f.items[file.ID] = it
 	if file.IsFolder() {

@@ -367,12 +367,8 @@ func (p *planner) copyName(name string) string {
 // local time). If taken reports the name is in use, -2, -3, ... is added
 // before the extension.
 func CopyName(name string, now time.Time, taken func(string) bool) string {
-	dir, base := path.Split(name)
-	ext := path.Ext(base)
-	if ext == base { // a dotfile like .env has no extension
-		ext = ""
-	}
-	stem := strings.TrimSuffix(base, ext) + "_copy_" + now.Format("20060102-150405")
+	dir, stem, ext := splitName(name)
+	stem += "_copy_" + now.Format("20060102-150405")
 	for n := 1; ; n++ {
 		c := dir + stem
 		if n > 1 {
@@ -383,6 +379,25 @@ func CopyName(name string, now time.Time, taken func(string) bool) string {
 			return c
 		}
 	}
+}
+
+// CopyPattern describes the conflict copy name for the file name, as
+// <name>_copy_<YYYYMMDD-HHMMSS><ext>, for messages.
+func CopyPattern(name string) string {
+	_, stem, ext := splitName(path.Base(name))
+	return stem + "_copy_<YYYYMMDD-HHMMSS>" + ext
+}
+
+// splitName splits a slash-separated path into its folder (with a trailing
+// slash), the file name without extension, and the extension. A dotfile
+// like .env has no extension.
+func splitName(name string) (dir, stem, ext string) {
+	dir, base := path.Split(name)
+	ext = path.Ext(base)
+	if ext == base {
+		ext = ""
+	}
+	return dir, strings.TrimSuffix(base, ext), ext
 }
 
 // allNames returns every path either scan saw: files, folders and skipped

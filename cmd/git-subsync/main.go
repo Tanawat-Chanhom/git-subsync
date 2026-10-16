@@ -16,7 +16,9 @@ func main() {
 	err := cli.Execute(ctx)
 	stop()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "git-subsync: %v\n", err)
-		os.Exit(1)
+		if msg := err.Error(); msg != "" {
+			fmt.Fprintf(os.Stderr, "git-subsync: %s\n", msg)
+		}
+		os.Exit(cli.ExitCode(err))
 	}
 }

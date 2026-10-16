@@ -249,6 +249,18 @@ func TestCopyName(t *testing.T) {
 	}
 }
 
+func TestCopyPattern(t *testing.T) {
+	for in, want := range map[string]string{
+		"docs/file1.txt": "file1_copy_<YYYYMMDD-HHMMSS>.txt",
+		".env":           ".env_copy_<YYYYMMDD-HHMMSS>",
+		"README":         "README_copy_<YYYYMMDD-HHMMSS>",
+	} {
+		if got := CopyPattern(in); got != want {
+			t.Errorf("CopyPattern(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
 func TestCopyNameUsesGivenTime(t *testing.T) {
 	utc := time.Date(2026, 10, 16, 9, 12, 0, 0, time.UTC)
 	if got := CopyName("a.txt", utc, nil); got != "a_copy_20261016-091200.txt" {
