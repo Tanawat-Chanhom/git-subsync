@@ -87,7 +87,7 @@ folder, add it to .gitsubsync and .gitignore, and sync it.`,
 				return err
 			}
 			if m != syncer.Download && !folder.CanAddChildren {
-				fmt.Fprintf(cmd.ErrOrStderr(), "warning: %s can't add files to %q, so uploads will fail; use --mode download to only download\n", user.Email, folder.Name)
+				fmt.Fprintf(cmd.ErrOrStderr(), "⚠️  warning: %s can't add files to %q, so uploads will fail; use --mode download to only download\n", user.Email, folder.Name)
 			}
 
 			entry := repo.Entry{Name: p, Path: p, Folder: folderID, Mode: string(m)}
@@ -106,11 +106,11 @@ folder, add it to .gitsubsync and .gitignore, and sync it.`,
 				return err
 			}
 			w.entries = append(w.entries, entry)
-			fmt.Fprintf(out, "Added %s → Drive folder %q (mode: %s)\n", p, folder.Name, m)
+			fmt.Fprintf(out, "🔗 Added %s → Drive folder %q (mode: %s)\n", p, folder.Name, m)
 
 			code := 0
 			if noSync {
-				fmt.Fprintf(out, "Run `git subsync sync %s` to sync it.\n", shellQuote(p))
+				fmt.Fprintf(out, "💡 Run `git subsync sync %s` to sync it.\n", shellQuote(p))
 			} else {
 				code, err = syncFolder(cmd, w, d, user, entry, syncOptions{now: time.Now()})
 				if err != nil {
@@ -118,7 +118,7 @@ folder, add it to .gitsubsync and .gitignore, and sync it.`,
 					code = 1
 				}
 			}
-			fmt.Fprintf(out, "Commit %s and .gitignore so others can sync it with `git subsync sync`.\n", repo.ConfigFile)
+			fmt.Fprintf(out, "💡 Commit %s and .gitignore so others can sync it with `git subsync sync`.\n", repo.ConfigFile)
 			if code != 0 {
 				return &exitError{code: code}
 			}

@@ -22,12 +22,39 @@ import (
 
 // Options control one sync run.
 type Options struct {
-	Mode   Mode
-	Force  bool
-	DryRun bool      // print the plan without changing anything
-	Now    time.Time // local time; names conflict copies
-	Out    io.Writer // one line per action
+	Mode     Mode
+	Force    bool
+	DryRun   bool      // print the plan without changing anything
+	Now      time.Time // local time; names conflict copies
+	Out      io.Writer // one line per action
+	Progress Progress  // optional
 }
+
+// Progress follows a sync while it runs, e.g. to draw a progress bar. Sync
+// calls it from one goroutine.
+type Progress interface {
+	// Scanned reports how many files the scans have found so far.
+	Scanned(local, remote int)
+	// Planned reports the transfers the sync will make and their total
+	// size. Scanning is over.
+	Planned(transfers int, bytes int64)
+	// Start begins the transfer of a file of size bytes; up is true for an
+	// upload.
+	Start(path string, size int64, up bool)
+	// Add reports n more bytes transferred. n is negative when an upload
+	// starts over.
+	Add(n int64)
+	// Done ends the current transfer, whether it worked or not.
+	Done()
+}
+
+type noProgress struct{}
+
+func (noProgress) Scanned(int, int)          {}
+func (noProgress) Planned(int, int64)        {}
+func (noProgress) Start(string, int64, bool) {}
+func (noProgress) Add(int64)                 {}
+func (noProgress) Done()                     {}
 
 // Result counts what a run did, or would do in a dry run.
 type Result struct {
@@ -87,22 +114,50 @@ func plural(n int, s string) string {
 // interrupted run can be repeated. Failed actions are reported and counted
 // in the result; the error is for failures that stop the whole run.
 func Sync(ctx context.Context, d gdrive.Drive, dir string, st *state.State, save func(*state.State) error, opts Options) (Result, error) {
-	local, err := ScanLocal(dir, st.Files)
+	prog := opts.Progress
+	if prog == nil {
+		prog = noProgress{}
+	}
+	var nLocal, nRemote int
+	local, err := ScanLocal(dir, st.Files, func() { nLocal++; prog.Scanned(nLocal, nRemote) })
 	if err != nil {
 		return Result{}, fmt.Errorf("scanning %s: %w", dir, err)
 	}
-	remote, err := ScanRemote(ctx, d, st.Folder)
+	remote, err := ScanRemote(ctx, d, st.Folder, func() { nRemote++; prog.Scanned(nLocal, nRemote) })
 	if err != nil {
 		return Result{}, err
 	}
 	actions := Plan(local, remote, st.Files, opts.Mode, opts.Force, opts.Now)
 
-	e := &executor{ctx: ctx, d: d, dir: dir, st: st, save: save, remote: remote, opts: opts, res: Result{DryRun: opts.DryRun}}
+	e := &executor{ctx: ctx, d: d, dir: dir, st: st, save: save, remote: remote, opts: opts, prog: prog, res: Result{DryRun: opts.DryRun}}
 	if opts.DryRun {
+		prog.Planned(0, 0)
 		e.dryRun(actions)
 		return e.res, nil
 	}
+	prog.Planned(transfers(actions))
 	return e.res, e.run(local, actions)
+}
+
+// transfers counts the downloads and uploads actions will make, and their
+// total size.
+func transfers(actions []Action) (n int, bytes int64) {
+	for _, a := range actions {
+		switch {
+		case a.Kind == KindDownload:
+			n, bytes = n+1, bytes+a.Remote.Size
+		case a.Kind == KindUpload:
+			n, bytes = n+1, bytes+a.Local.Size
+		case a.Kind != KindConflict:
+		case a.Resolution == KeepBoth:
+			n, bytes = n+2, bytes+a.Remote.Size+a.Local.Size
+		case a.Resolution == KeepLocalCopy:
+			n, bytes = n+1, bytes+a.Remote.Size
+		case a.Resolution == KeepDriveCopy:
+			n, bytes = n+1, bytes+a.Local.Size
+		}
+	}
+	return n, bytes
 }
 
 type executor struct {
@@ -113,6 +168,7 @@ type executor struct {
 	save   func(*state.State) error
 	remote Remote // Dirs grows as folders are created on Drive
 	opts   Options
+	prog   Progress
 	res    Result
 }
 
@@ -255,22 +311,22 @@ func (e *executor) report(p string, err error) bool {
 		e.skip(p, changed.msg+"; run sync again")
 	default:
 		e.res.Failed++
-		fmt.Fprintf(e.opts.Out, "✗ %-9s %s: %v\n", "failed", p, err)
+		fmt.Fprintf(e.opts.Out, "❌ %-9s %s: %v\n", "failed", p, err)
 	}
 	return false
 }
 
 func (e *executor) skip(p, why string) {
 	e.res.Skipped++
-	fmt.Fprintf(e.opts.Out, "  %-9s %s — %s\n", "skip", p, why)
+	fmt.Fprintf(e.opts.Out, "⏩ %-9s %s — %s\n", "skip", p, why)
 }
 
 func (e *executor) printDownload(a Action) {
-	fmt.Fprintf(e.opts.Out, "↓ %-9s %s%s\n", "download", a.Path, paren(a.Note))
+	fmt.Fprintf(e.opts.Out, "📥 %-9s %s%s\n", "download", a.Path, paren(a.Note))
 }
 
 func (e *executor) printUpload(a Action) {
-	fmt.Fprintf(e.opts.Out, "↑ %-9s %s%s\n", "upload", a.Path, paren(a.Note))
+	fmt.Fprintf(e.opts.Out, "📤 %-9s %s%s\n", "upload", a.Path, paren(a.Note))
 }
 
 func (e *executor) printConflict(a Action) {
@@ -281,11 +337,11 @@ func (e *executor) printConflict(a Action) {
 		if r.ModifiedBy != "" {
 			when = "by " + r.ModifiedBy + ", " + when
 		}
-		fmt.Fprintf(e.opts.Out, "⚠ %-9s %s — %s (%s). Not uploaded.\n", "conflict", a.Path, a.Note, when)
+		fmt.Fprintf(e.opts.Out, "🛑 %-9s %s — %s (%s). Not uploaded.\n", "conflict", a.Path, a.Note, when)
 	case KeepDriveCopy:
-		fmt.Fprintf(e.opts.Out, "⚠ %-9s %s → %s (%s; Drive version kept as the copy)\n", "conflict", a.Path, path.Base(a.Copy), a.Note)
+		fmt.Fprintf(e.opts.Out, "🔀 %-9s %s → %s (%s; Drive version kept as the copy)\n", "conflict", a.Path, path.Base(a.Copy), a.Note)
 	default:
-		fmt.Fprintf(e.opts.Out, "⚠ %-9s %s → %s (%s; local version kept as the copy)\n", "conflict", a.Path, path.Base(a.Copy), a.Note)
+		fmt.Fprintf(e.opts.Out, "🔀 %-9s %s → %s (%s; local version kept as the copy)\n", "conflict", a.Path, path.Base(a.Copy), a.Note)
 	}
 }
 
@@ -343,6 +399,8 @@ func (e *executor) download(p string, r RemoteFile, want *LocalFile) (err error)
 	if err := e.checkLocal(p, want); err != nil {
 		return err
 	}
+	e.prog.Start(p, r.Size, false)
+	defer e.prog.Done()
 	dst := e.path(p)
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 		return err
@@ -370,7 +428,7 @@ func (e *executor) download(p string, r RemoteFile, want *LocalFile) (err error)
 		}
 	}()
 	h := md5.New()
-	if _, err := io.Copy(io.MultiWriter(tmp, h), body); err != nil {
+	if _, err := io.Copy(io.MultiWriter(tmp, h, progressWriter{e.prog}), body); err != nil {
 		return fmt.Errorf("downloading: %w", err)
 	}
 	if sum := hex.EncodeToString(h.Sum(nil)); sum != r.MD5 {
@@ -421,7 +479,9 @@ func (e *executor) upload(p string, r *RemoteFile) error {
 		return &changedError{"no longer a regular file"}
 	}
 
-	content := &hashReader{f: f, h: md5.New()}
+	e.prog.Start(p, fi.Size(), true)
+	defer e.prog.Done()
+	content := &hashReader{f: f, h: md5.New(), prog: e.prog}
 	var res gdrive.File
 	if r != nil {
 		res, err = e.d.Update(e.ctx, r.ID, content)
@@ -505,16 +565,21 @@ func (e *executor) keepDriveCopy(a Action) error {
 	return e.upload(a.Path, nil)
 }
 
-// hashReader hashes what is read from f. Rewinding it, as the Drive client
-// does before retrying an upload, starts the hash over.
+// hashReader hashes what is read from f and reports it as progress.
+// Rewinding it, as the Drive client does before retrying an upload, starts
+// over.
 type hashReader struct {
-	f *os.File
-	h hash.Hash
+	f    *os.File
+	h    hash.Hash
+	prog Progress
+	read int64
 }
 
 func (r *hashReader) Read(p []byte) (int, error) {
 	n, err := r.f.Read(p)
 	r.h.Write(p[:n])
+	r.read += int64(n)
+	r.prog.Add(int64(n))
 	return n, err
 }
 
@@ -523,7 +588,17 @@ func (r *hashReader) Seek(offset int64, whence int) (int64, error) {
 		return 0, errors.New("upload content can only be rewound to the start")
 	}
 	r.h.Reset()
+	r.prog.Add(-r.read)
+	r.read = 0
 	return r.f.Seek(0, io.SeekStart)
+}
+
+// progressWriter reports what is written to it as progress.
+type progressWriter struct{ prog Progress }
+
+func (w progressWriter) Write(p []byte) (int, error) {
+	w.prog.Add(int64(len(p)))
+	return len(p), nil
 }
 
 func (r *hashReader) sum() string { return hex.EncodeToString(r.h.Sum(nil)) }

@@ -7,6 +7,7 @@ import (
 	"os"
 
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 	"google.golang.org/api/drive/v3"
 
 	"github.com/Tanawat-Chanhom/git-subsync/internal/auth"
@@ -52,13 +53,13 @@ var openDrive = func(ctx context.Context, cmd *cobra.Command) (gdrive.Drive, gdr
 	if auth.IsSessionExpired(err) {
 		reason = "Session expired."
 	}
-	fmt.Fprintln(cmd.ErrOrStderr(), reason, "Signing in to Google Drive…")
+	fmt.Fprintln(cmd.ErrOrStderr(), "🔑", reason, "Signing in to Google Drive…")
 	if err := signIn(ctx, cmd, false); err != nil {
 		return nil, gdrive.User{}, err
 	}
 	d, user, err = connect(ctx)
 	if err == nil {
-		fmt.Fprintf(cmd.ErrOrStderr(), "Logged in as %s\n", user.Email)
+		fmt.Fprintf(cmd.ErrOrStderr(), "✅ Logged in as %s\n", user.Email)
 	}
 	return d, user, err
 }
@@ -89,8 +90,14 @@ var interactive = func() bool {
 }
 
 func isTerminal(f *os.File) bool {
-	fi, err := f.Stat()
-	return err == nil && fi.Mode()&os.ModeCharDevice != 0
+	return term.IsTerminal(int(f.Fd()))
+}
+
+// progressTerminal returns stderr if a live progress display can be drawn
+// on it.
+func progressTerminal(cmd *cobra.Command) (*os.File, bool) {
+	f, ok := cmd.ErrOrStderr().(*os.File)
+	return f, ok && isTerminal(f) && os.Getenv("TERM") != "dumb"
 }
 
 // hintError replaces an error's message with an actionable one while keeping

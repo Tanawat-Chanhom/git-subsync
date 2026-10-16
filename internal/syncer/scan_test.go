@@ -39,7 +39,7 @@ func TestScanLocal(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	local, err := ScanLocal(dir, nil)
+	local, err := ScanLocal(dir, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -71,7 +71,7 @@ func TestScanLocalReusesMD5(t *testing.T) {
 
 	// Matching size and mtime: the state's MD5 is trusted, even if wrong.
 	base := map[string]state.File{"a.txt": {MD5: "from-state", Size: 5, MTime: fi.ModTime()}}
-	local, err := ScanLocal(dir, base)
+	local, err := ScanLocal(dir, base, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,7 +83,7 @@ func TestScanLocalReusesMD5(t *testing.T) {
 	if err := os.Chtimes(p, time.Now(), fi.ModTime().Add(time.Second)); err != nil {
 		t.Fatal(err)
 	}
-	local, err = ScanLocal(dir, base)
+	local, err = ScanLocal(dir, base, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -93,7 +93,7 @@ func TestScanLocalReusesMD5(t *testing.T) {
 }
 
 func TestScanLocalMissingDir(t *testing.T) {
-	local, err := ScanLocal(filepath.Join(t.TempDir(), "missing"), nil)
+	local, err := ScanLocal(filepath.Join(t.TempDir(), "missing"), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -120,7 +120,7 @@ func TestScanRemote(t *testing.T) {
 	noSum := d.AddFile(root, "nosum.bin", "x", "")
 	d.SetMD5(noSum, "")
 
-	remote, err := ScanRemote(context.Background(), d, root)
+	remote, err := ScanRemote(context.Background(), d, root, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -156,7 +156,7 @@ func TestScanRemoteListError(t *testing.T) {
 		}
 		return nil
 	}
-	if _, err := ScanRemote(context.Background(), d, root); !errors.Is(err, boom) {
+	if _, err := ScanRemote(context.Background(), d, root, nil); !errors.Is(err, boom) {
 		t.Fatalf("err = %v, want boom", err)
 	}
 }

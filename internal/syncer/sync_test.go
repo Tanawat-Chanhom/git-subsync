@@ -3,7 +3,9 @@ package syncer
 import (
 	"bytes"
 	"context"
+	"crypto/md5"
 	"errors"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -135,7 +137,7 @@ func TestSyncFirstDownload(t *testing.T) {
 	e.d.AddGoogleDoc(docs, "Plan")
 
 	res, out := e.sync(Both, false, false)
-	want := "↓ download  a.txt\n↓ download  docs/b.txt\n  skip      docs/Plan — Google Docs file\n"
+	want := "📥 download  a.txt\n📥 download  docs/b.txt\n⏩ skip      docs/Plan — Google Docs file\n"
 	if out != want {
 		t.Fatalf("output:\n%s\nwant\n%s", out, want)
 	}
@@ -163,7 +165,7 @@ func TestSyncFirstUploadCreatesFolders(t *testing.T) {
 	e.write("x/y/z.txt", "z")
 
 	res, out := e.sync(Both, false, false)
-	if res.Uploaded != 2 || out != "↑ upload    a.txt\n↑ upload    x/y/z.txt\n" {
+	if res.Uploaded != 2 || out != "📤 upload    a.txt\n📤 upload    x/y/z.txt\n" {
 		t.Fatalf("res = %+v\n%s", res, out)
 	}
 	assertTree(t, "Drive", e.d.Tree(e.root), map[string]string{"a.txt": "a", "x/": "", "x/y/": "", "x/y/z.txt": "z"})
@@ -200,7 +202,7 @@ func TestSyncBothModeConflict(t *testing.T) {
 	e.d.SetContent(e.find("file1.txt"), "theirs", "Somchai")
 	res, out := e.sync(Both, false, false)
 	c := e.copyName("file1.txt")
-	want := "⚠ conflict  file1.txt → " + c + " (changed locally and on Drive; local version kept as the copy)\n"
+	want := "🔀 conflict  file1.txt → " + c + " (changed locally and on Drive; local version kept as the copy)\n"
 	if out != want || res.Summary() != "1 conflict" {
 		t.Fatalf("output:\n%s\nwant\n%s\nsummary %q", out, want, res.Summary())
 	}
@@ -222,8 +224,8 @@ func TestSyncDeletesAreNotPropagated(t *testing.T) {
 	e.d.Trash(e.find("gone-on-drive.txt"))
 	e.d.Trash(e.find("gone-both.txt"))
 	_, out := e.sync(Both, false, false)
-	want := "↓ download  gone-locally.txt (deleted locally; deletes aren't synced)\n" +
-		"↑ upload    gone-on-drive.txt (deleted on Drive; deletes aren't synced)\n"
+	want := "📥 download  gone-locally.txt (deleted locally; deletes aren't synced)\n" +
+		"📤 upload    gone-on-drive.txt (deleted on Drive; deletes aren't synced)\n"
 	if out != want {
 		t.Fatalf("output:\n%s\nwant\n%s", out, want)
 	}
@@ -253,11 +255,11 @@ func TestSyncDownloadModeNeverWritesDrive(t *testing.T) {
 
 	res, out := e.sync(Download, false, false)
 	c := e.copyName("conflict.txt")
-	want := "⚠ conflict  conflict.txt → " + c + " (changed locally and on Drive; local version kept as the copy)\n" +
-		"↓ download  new-remote.txt\n" +
-		"↓ download  shared.txt\n" +
-		"  skip      deleted-on-drive.txt — deleted on Drive; deletes aren't synced\n" +
-		"  skip      new-local.txt — local only; download mode doesn't upload\n"
+	want := "🔀 conflict  conflict.txt → " + c + " (changed locally and on Drive; local version kept as the copy)\n" +
+		"📥 download  new-remote.txt\n" +
+		"📥 download  shared.txt\n" +
+		"⏩ skip      deleted-on-drive.txt — deleted on Drive; deletes aren't synced\n" +
+		"⏩ skip      new-local.txt — local only; download mode doesn't upload\n"
 	if out != want {
 		t.Fatalf("output:\n%s\nwant\n%s", out, want)
 	}
@@ -302,11 +304,11 @@ func TestSyncUploadModeNeverWritesLocal(t *testing.T) {
 
 	res, out := e.sync(Upload, false, false)
 	when := e.d.File(e.find("docs/file1.txt")).ModifiedTime.In(e.now.Location()).Format("2006-01-02 15:04")
-	want := "↑ upload    new-local.txt\n" +
-		"↑ upload    shared.txt\n" +
-		"⚠ conflict  docs/file1.txt — changed locally and on Drive (by Somchai, " + when + "). Not uploaded.\n" +
-		"  skip      deleted-locally.txt — deleted locally; deletes aren't synced\n" +
-		"  skip      new-remote.txt — only on Drive; upload mode doesn't download\n"
+	want := "📤 upload    new-local.txt\n" +
+		"📤 upload    shared.txt\n" +
+		"🛑 conflict  docs/file1.txt — changed locally and on Drive (by Somchai, " + when + "). Not uploaded.\n" +
+		"⏩ skip      deleted-locally.txt — deleted locally; deletes aren't synced\n" +
+		"⏩ skip      new-remote.txt — only on Drive; upload mode doesn't download\n"
 	if out != want {
 		t.Fatalf("output:\n%s\nwant\n%s", out, want)
 	}
@@ -326,9 +328,9 @@ func TestSyncUploadModeNeverWritesLocal(t *testing.T) {
 
 	res, out = e.sync(Upload, true, false)
 	c := e.copyName("docs/file1.txt")
-	want = "⚠ conflict  docs/file1.txt → " + filepath.Base(c) + " (changed locally and on Drive; Drive version kept as the copy)\n" +
-		"  skip      deleted-locally.txt — deleted locally; deletes aren't synced\n" +
-		"  skip      new-remote.txt — only on Drive; upload mode doesn't download\n"
+	want = "🔀 conflict  docs/file1.txt → " + filepath.Base(c) + " (changed locally and on Drive; Drive version kept as the copy)\n" +
+		"⏩ skip      deleted-locally.txt — deleted locally; deletes aren't synced\n" +
+		"⏩ skip      new-remote.txt — only on Drive; upload mode doesn't download\n"
 	if out != want || len(res.Unresolved) != 0 || res.Conflicts != 1 {
 		t.Fatalf("--force output:\n%s\nwant\n%s", out, want)
 	}
@@ -387,9 +389,9 @@ func TestSyncDryRunChangesNothing(t *testing.T) {
 
 	res, out := e.sync(Both, false, true)
 	c := e.copyName("c.txt")
-	want := "⚠ conflict  c.txt → " + c + " (local and Drive versions differ; local version kept as the copy)\n" +
-		"↓ download  remote.txt\n" +
-		"↑ upload    local.txt\n"
+	want := "🔀 conflict  c.txt → " + c + " (local and Drive versions differ; local version kept as the copy)\n" +
+		"📥 download  remote.txt\n" +
+		"📤 upload    local.txt\n"
 	if out != want || res.Summary() != "Dry run: 1 to download, 1 to upload, 1 conflict" {
 		t.Fatalf("output:\n%s\nwant\n%s\nsummary %q", out, want, res.Summary())
 	}
@@ -407,7 +409,7 @@ func TestSyncRejectsCorruptDownload(t *testing.T) {
 	e.d.SetMD5(id, "0123456789abcdef0123456789abcdef")
 
 	res, out := e.sync(Both, false, false)
-	if res.Failed != 1 || !strings.Contains(out, "✗ failed    a.txt: downloaded content doesn't match Drive's checksum") {
+	if res.Failed != 1 || !strings.Contains(out, "❌ failed    a.txt: downloaded content doesn't match Drive's checksum") {
 		t.Fatalf("res = %+v\n%s", res, out)
 	}
 	if tree := e.localTree(); len(tree) != 0 {
@@ -429,13 +431,13 @@ func TestSyncResumesAfterFailure(t *testing.T) {
 		return nil
 	}
 	res, out := e.sync(Both, false, false)
-	if res.Downloaded != 2 || res.Failed != 1 || !strings.Contains(out, "✗ failed    2.txt: network down") {
+	if res.Downloaded != 2 || res.Failed != 1 || !strings.Contains(out, "❌ failed    2.txt: network down") {
 		t.Fatalf("res = %+v\n%s", res, out)
 	}
 
 	fail = false
 	res, out = e.sync(Both, false, false)
-	if res.Downloaded != 1 || res.Failed != 0 || out != "↓ download  2.txt\n" {
+	if res.Downloaded != 1 || res.Failed != 0 || out != "📥 download  2.txt\n" {
 		t.Fatalf("rerun: %+v\n%s", res, out)
 	}
 	e.assertNoop(Both)
@@ -461,8 +463,8 @@ func TestSyncSkipsFilesChangedDuringSync(t *testing.T) {
 		return nil
 	}
 	res, out := e.sync(Both, false, false)
-	want := "  skip      down.txt — changed locally during the sync; run sync again\n" +
-		"  skip      up.txt — changed on Drive during the sync; run sync again\n"
+	want := "⏩ skip      down.txt — changed locally during the sync; run sync again\n" +
+		"⏩ skip      up.txt — changed on Drive during the sync; run sync again\n"
 	if out != want || res.Skipped != 2 || res.Failed != 0 {
 		t.Fatalf("output:\n%s\nwant\n%s", out, want)
 	}
@@ -543,5 +545,102 @@ func TestSummary(t *testing.T) {
 		if got := tc.r.Summary(); got != tc.want {
 			t.Errorf("%+v: %q, want %q", tc.r, got, tc.want)
 		}
+	}
+}
+
+// recorder is a Progress that records what it is told.
+type recorder struct {
+	scanned          [2]int
+	planned          int
+	plannedBytes     int64
+	starts           []string
+	added            map[string]int64
+	current          string
+	open             bool
+	unbalancedOrNest bool
+}
+
+func (r *recorder) Scanned(local, remote int) { r.scanned = [2]int{local, remote} }
+func (r *recorder) Planned(n int, b int64)    { r.planned, r.plannedBytes = n, b }
+func (r *recorder) Start(p string, size int64, up bool) {
+	if r.open {
+		r.unbalancedOrNest = true
+	}
+	dir := "down"
+	if up {
+		dir = "up"
+	}
+	r.current, r.open = dir+" "+p, true
+	r.starts = append(r.starts, r.current)
+}
+func (r *recorder) Add(n int64) { r.added[r.current] += n }
+func (r *recorder) Done() {
+	if !r.open {
+		r.unbalancedOrNest = true
+	}
+	r.open = false
+}
+
+func TestSyncReportsProgress(t *testing.T) {
+	e := newEnv(t)
+	e.d.AddFile(e.root, "down.txt", "12345", "")
+	e.d.AddFile(e.root, "c.txt", "drive", "")
+	e.write("up.txt", "abc")
+	e.write("c.txt", "local!")
+	e.write("only-local-1.txt", "x")
+
+	st := state.New(e.root)
+	rec := &recorder{added: map[string]int64{}}
+	var out bytes.Buffer
+	e.now = time.Now()
+	_, err := Sync(context.Background(), e.d, e.dir, st, e.store.Save, Options{Mode: Both, Now: e.now, Out: &out, Progress: rec})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec.scanned != [2]int{3, 2} {
+		t.Errorf("scanned = %v, want 3 local, 2 on Drive", rec.scanned)
+	}
+	// down.txt (5) + up.txt (3) + only-local-1.txt (1) + the conflict:
+	// download c.txt (5) and upload its copy (6).
+	if rec.planned != 5 || rec.plannedBytes != 20 {
+		t.Errorf("planned %d transfers of %d bytes, want 5 of 20", rec.planned, rec.plannedBytes)
+	}
+	c := e.copyName("c.txt")
+	wantStarts := []string{"down c.txt", "down down.txt", "up " + c, "up only-local-1.txt", "up up.txt"} // each phase in path order
+	if !reflect.DeepEqual(rec.starts, wantStarts) {
+		t.Errorf("starts = %v\nwant     %v", rec.starts, wantStarts)
+	}
+	wantAdded := map[string]int64{"down c.txt": 5, "down down.txt": 5, "up only-local-1.txt": 1, "up up.txt": 3, "up " + c: 6}
+	if !reflect.DeepEqual(rec.added, wantAdded) {
+		t.Errorf("added = %v\nwant    %v", rec.added, wantAdded)
+	}
+	if rec.unbalancedOrNest || rec.open {
+		t.Error("Start and Done calls don't pair up")
+	}
+}
+
+// Rewinding an upload for a retry takes back the progress already reported.
+func TestHashReaderRewindResetsProgress(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "f")
+	write(t, p, "hello")
+	f, err := os.Open(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	rec := &recorder{added: map[string]int64{}}
+	r := &hashReader{f: f, h: md5.New(), prog: rec}
+	buf := make([]byte, 3)
+	if _, err := r.Read(buf); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Seek(0, io.SeekStart); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.ReadAll(r); err != nil {
+		t.Fatal(err)
+	}
+	if rec.added[""] != 5 || r.sum() != md5Hello {
+		t.Fatalf("progress = %d, sum = %s; want 5 and the MD5 of hello", rec.added[""], r.sum())
 	}
 }

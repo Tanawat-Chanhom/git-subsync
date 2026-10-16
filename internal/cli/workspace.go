@@ -101,7 +101,7 @@ func syncFolder(cmd *cobra.Command, w *workspace, d gdrive.Drive, user gdrive.Us
 		return 1, fmt.Errorf("%s in %s: %w", e.Path, repo.ConfigFile, err)
 	}
 	if opts.force && mode != syncer.Upload {
-		fmt.Fprintf(cmd.ErrOrStderr(), "note: --force has no effect in %s mode (%s)\n", mode, e.Path)
+		fmt.Fprintf(cmd.ErrOrStderr(), "💡 --force has no effect in %s mode (%s)\n", mode, e.Path)
 	}
 
 	store := w.store(e.Path)
@@ -134,7 +134,7 @@ func syncFolder(cmd *cobra.Command, w *workspace, d gdrive.Drive, user gdrive.Us
 	switch fi, err := os.Lstat(dir); {
 	case errors.Is(err, fs.ErrNotExist):
 		if !opts.dryRun {
-			fmt.Fprintf(cmd.ErrOrStderr(), "Creating %s/\n", e.Path)
+			fmt.Fprintf(cmd.ErrOrStderr(), "📁 Creating %s/\n", e.Path)
 			if err := os.MkdirAll(dir, 0o755); err != nil {
 				return 1, err
 			}
@@ -149,19 +149,26 @@ func syncFolder(cmd *cobra.Command, w *workspace, d gdrive.Drive, user gdrive.Us
 		}
 	}
 
-	res, err := syncer.Sync(ctx, d, dir, st, store.Save, syncer.Options{
-		Mode: mode, Force: opts.force, DryRun: opts.dryRun, Now: opts.now, Out: out,
-	})
+	sopts := syncer.Options{Mode: mode, Force: opts.force, DryRun: opts.dryRun, Now: opts.now, Out: out}
+	if tty, ok := progressTerminal(cmd); ok {
+		lp := newLiveProgress(out, tty, e.Path)
+		defer lp.Close()
+		sopts.Out, sopts.Progress = lp, lp
+	}
+	res, err := syncer.Sync(ctx, d, dir, st, store.Save, sopts)
+	if lp, ok := sopts.Progress.(*liveProgress); ok {
+		lp.Close()
+	}
 	if err != nil {
 		return 1, err
 	}
-	fmt.Fprintln(out, res.Summary())
+	fmt.Fprintln(out, summaryLine(res))
 	if n := len(res.Unresolved); n > 0 {
-		fmt.Fprintf(out, "To upload your version, run: git subsync sync %s --force\n", shellQuote(e.Path))
+		fmt.Fprintf(out, "💡 To upload your version, run: git subsync sync %s --force\n", shellQuote(e.Path))
 		if n == 1 {
-			fmt.Fprintf(out, "(the Drive version will be kept as %s)\n", syncer.CopyPattern(res.Unresolved[0]))
+			fmt.Fprintf(out, "   (the Drive version will be kept as %s)\n", syncer.CopyPattern(res.Unresolved[0]))
 		} else {
-			fmt.Fprintln(out, "(the Drive versions will be kept as <name>_copy_<YYYYMMDD-HHMMSS><ext>)")
+			fmt.Fprintln(out, "   (the Drive versions will be kept as <name>_copy_<YYYYMMDD-HHMMSS><ext>)")
 		}
 	}
 
@@ -203,6 +210,22 @@ func confirm(cmd *cobra.Command, prompt string) bool {
 		return true
 	}
 	return false
+}
+
+// summaryLine is the result summary with an icon: ✅ when everything went
+// fine, ❌ when something failed, 🛑 for unresolved conflicts, and 🔍 for a
+// dry run.
+func summaryLine(res syncer.Result) string {
+	icon := "✅"
+	switch {
+	case res.DryRun:
+		icon = "🔍"
+	case res.Failed > 0:
+		icon = "❌"
+	case len(res.Unresolved) > 0:
+		icon = "🛑"
+	}
+	return icon + " " + res.Summary()
 }
 
 // worseExit combines exit codes: a failure (1) outranks unresolved

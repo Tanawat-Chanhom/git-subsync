@@ -53,11 +53,11 @@ never changed.`,
 				if err := os.RemoveAll(w.dir(e.Path)); err != nil {
 					return err
 				}
-				fmt.Fprintf(out, "Removed %s and deleted its local files.\n", e.Path)
+				fmt.Fprintf(out, "🧹 Removed %s and deleted its local files.\n", e.Path)
 			} else {
-				fmt.Fprintf(out, "Removed %s. Its files are still there, and Git no longer ignores them.\n", e.Path)
+				fmt.Fprintf(out, "🧹 Removed %s. Its files are still there, and Git no longer ignores them.\n", e.Path)
 			}
-			_, err = fmt.Fprintf(out, "Drive was not changed. Commit %s and .gitignore.\n", repo.ConfigFile)
+			_, err = fmt.Fprintf(out, "💡 Drive was not changed. Commit %s and .gitignore.\n", repo.ConfigFile)
 			return err
 		},
 	}

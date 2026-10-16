@@ -56,7 +56,7 @@ clone, is created and downloaded.`,
 					if i > 0 {
 						fmt.Fprintln(out)
 					}
-					fmt.Fprintf(out, "%s:\n", e.Path)
+					fmt.Fprintf(out, "📂 %s\n", e.Path)
 				}
 				c, err := syncFolder(cmd, w, d, user, e, opts)
 				if err != nil {

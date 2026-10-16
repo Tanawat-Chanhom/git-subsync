@@ -179,11 +179,11 @@ func TestAddSyncBothMode(t *testing.T) {
 	t.Chdir(filepath.Join(r.root, "src"))
 
 	out := r.mustCLI(0, "add", folderURL+r.folder+"?usp=sharing", "test-git-sync")
-	want := "Added test-git-sync → Drive folder \"Design\" (mode: both)\n" +
-		"↓ download  docs/file1.txt\n" +
-		"↓ download  readme.txt\n" +
-		"2 downloaded\n" +
-		"Commit .gitsubsync and .gitignore so others can sync it with `git subsync sync`.\n"
+	want := "🔗 Added test-git-sync → Drive folder \"Design\" (mode: both)\n" +
+		"📥 download  docs/file1.txt\n" +
+		"📥 download  readme.txt\n" +
+		"✅ 2 downloaded\n" +
+		"💡 Commit .gitsubsync and .gitignore so others can sync it with `git subsync sync`.\n"
 	if out != want {
 		t.Fatalf("add output:\n%s\nwant\n%s", out, want)
 	}
@@ -206,7 +206,7 @@ func TestAddSyncBothMode(t *testing.T) {
 	r.d.AddFile(r.folder, "new-on-drive.txt", "new", "Somchai")
 	r.write("test-git-sync/new-local.txt", "local")
 	out = r.mustCLI(0, "sync")
-	want = "↓ download  docs/file1.txt\n↓ download  new-on-drive.txt\n↑ upload    new-local.txt\n↑ upload    readme.txt\n2 downloaded, 2 uploaded\n"
+	want = "📥 download  docs/file1.txt\n📥 download  new-on-drive.txt\n📤 upload    new-local.txt\n📤 upload    readme.txt\n✅ 2 downloaded, 2 uploaded\n"
 	if out != want {
 		t.Fatalf("sync output:\n%s\nwant\n%s", out, want)
 	}
@@ -223,7 +223,7 @@ func TestAddSyncBothMode(t *testing.T) {
 
 	// Nothing changed: nothing happens.
 	writes := r.d.Writes()
-	if out := r.mustCLI(0, "sync", "test-git-sync"); out != "Up to date\n" || r.d.Writes() != writes {
+	if out := r.mustCLI(0, "sync", "test-git-sync"); out != "✅ Up to date\n" || r.d.Writes() != writes {
 		t.Fatalf("second sync: %q, %d writes", out, r.d.Writes()-writes)
 	}
 
@@ -231,7 +231,7 @@ func TestAddSyncBothMode(t *testing.T) {
 	r.write("test-git-sync/docs/file1.txt", "mine")
 	r.d.SetContent(r.driveID("docs/file1.txt"), "theirs", "Somchai")
 	out = r.mustCLI(0, "sync")
-	if !strings.HasPrefix(out, "⚠ conflict  docs/file1.txt → file1_copy_") || !strings.HasSuffix(out, "1 conflict\n") {
+	if !strings.HasPrefix(out, "🔀 conflict  docs/file1.txt → file1_copy_") || !strings.HasSuffix(out, "1 conflict\n") {
 		t.Fatalf("conflict output:\n%s", out)
 	}
 	local := r.files("test-git-sync")
@@ -242,7 +242,7 @@ func TestAddSyncBothMode(t *testing.T) {
 	if got := r.driveFiles(); !reflect.DeepEqual(got, local) {
 		t.Fatalf("Drive = %v\nlocal = %v", got, local)
 	}
-	if out := r.mustCLI(0, "sync"); out != "Up to date\n" {
+	if out := r.mustCLI(0, "sync"); out != "✅ Up to date\n" {
 		t.Fatalf("sync after conflict: %q", out)
 	}
 
@@ -261,7 +261,7 @@ func TestUploadModeConflict(t *testing.T) {
 	r.write("test-git-sync/other.txt", "o")
 
 	out := r.mustCLI(0, "add", "--mode", "upload", "--force", r.folder, "test-git-sync")
-	if !strings.Contains(out, "↑ upload    other.txt\n") || !strings.Contains(out, "skip      drive-only.txt — only on Drive; upload mode doesn't download\n") {
+	if !strings.Contains(out, "📤 upload    other.txt\n") || !strings.Contains(out, "skip      drive-only.txt — only on Drive; upload mode doesn't download\n") {
 		t.Fatalf("add output:\n%s", out)
 	}
 	if _, err := os.Stat(filepath.Join(r.root, "test-git-sync", "drive-only.txt")); !os.IsNotExist(err) {
@@ -275,12 +275,12 @@ func TestUploadModeConflict(t *testing.T) {
 	localBefore := r.files("test-git-sync")
 
 	out = r.mustCLI(2, "sync", "test-git-sync")
-	want := "↑ upload    other.txt\n" +
-		"⚠ conflict  file1.txt — changed locally and on Drive (by Somchai, " + when + "). Not uploaded.\n" +
-		"  skip      drive-only.txt — only on Drive; upload mode doesn't download\n" +
-		"1 uploaded, 1 conflict unresolved, 1 skipped\n" +
-		"To upload your version, run: git subsync sync test-git-sync --force\n" +
-		"(the Drive version will be kept as file1_copy_<YYYYMMDD-HHMMSS>.txt)\n"
+	want := "📤 upload    other.txt\n" +
+		"🛑 conflict  file1.txt — changed locally and on Drive (by Somchai, " + when + "). Not uploaded.\n" +
+		"⏩ skip      drive-only.txt — only on Drive; upload mode doesn't download\n" +
+		"🛑 1 uploaded, 1 conflict unresolved, 1 skipped\n" +
+		"💡 To upload your version, run: git subsync sync test-git-sync --force\n" +
+		"   (the Drive version will be kept as file1_copy_<YYYYMMDD-HHMMSS>.txt)\n"
 	if out != want {
 		t.Fatalf("sync output:\n%s\nwant\n%s", out, want)
 	}
@@ -297,7 +297,7 @@ func TestUploadModeConflict(t *testing.T) {
 	}
 
 	out = r.mustCLI(0, "sync", "test-git-sync", "--force")
-	if !strings.HasPrefix(out, "⚠ conflict  file1.txt → file1_copy_") || !strings.Contains(out, "Drive version kept as the copy") {
+	if !strings.HasPrefix(out, "🔀 conflict  file1.txt → file1_copy_") || !strings.Contains(out, "Drive version kept as the copy") {
 		t.Fatalf("--force output:\n%s", out)
 	}
 	drive := r.driveFiles()
@@ -318,7 +318,7 @@ func TestDownloadModeNeverWritesDrive(t *testing.T) {
 	r.d.SetContent(r.driveID("a.txt"), "theirs", "Somchai")
 	r.write("dl/local-only.txt", "x")
 	stdout, stderr, code := cli(t, "sync", "--force")
-	if code != 0 || !strings.Contains(stderr, "note: --force has no effect in download mode (dl)") {
+	if code != 0 || !strings.Contains(stderr, "💡 --force has no effect in download mode (dl)") {
 		t.Fatalf("exit %d\nstdout:\n%s\nstderr:\n%s", code, stdout, stderr)
 	}
 	local := r.files("dl")
@@ -344,7 +344,7 @@ func TestSyncFreshClone(t *testing.T) {
 	t.Chdir(clone)
 	r.root = strings.TrimSpace(git(t, clone, "rev-parse", "--show-toplevel"))
 	stdout, stderr, code := cli(t, "sync")
-	if code != 0 || stdout != "↓ download  a.txt\n1 downloaded\n" || !strings.Contains(stderr, "Creating shared/design/") {
+	if code != 0 || stdout != "📥 download  a.txt\n✅ 1 downloaded\n" || !strings.Contains(stderr, "Creating shared/design/") {
 		t.Fatalf("exit %d\nstdout:\n%s\nstderr:\n%s", code, stdout, stderr)
 	}
 	if got := r.read("shared/design/a.txt"); got != "a" {
@@ -465,7 +465,7 @@ func TestSyncErrors(t *testing.T) {
 		return nil
 	}
 	stdout, _, code := cli(t, "sync")
-	if code != 1 || !strings.Contains(stdout, "✗ failed    bad.txt: connection reset") || !strings.Contains(stdout, "1 downloaded, 1 failed") {
+	if code != 1 || !strings.Contains(stdout, "❌ failed    bad.txt: connection reset") || !strings.Contains(stdout, "1 downloaded, 1 failed") {
 		t.Fatalf("exit %d\n%s", code, stdout)
 	}
 
@@ -494,7 +494,7 @@ func TestFirstSyncOfFolderWithFilesNeedsConfirmation(t *testing.T) {
 		!strings.Contains(stderr, "in a terminal to confirm") {
 		t.Fatalf("non-interactive: exit %d, stderr %q", code, stderr)
 	}
-	if out := r.mustCLI(0, "sync", "--dry-run"); !strings.Contains(out, "↑ upload    key.txt") {
+	if out := r.mustCLI(0, "sync", "--dry-run"); !strings.Contains(out, "📤 upload    key.txt") {
 		t.Fatalf("dry run needs no confirmation:\n%s", out)
 	}
 

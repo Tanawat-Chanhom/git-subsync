@@ -27,8 +27,8 @@ const googleAppsPrefix = "application/vnd.google-apps."
 
 // ScanLocal lists the files under dir. A file's MD5 is taken from base when
 // its size and mtime match the last sync; otherwise the file is hashed. A
-// missing dir is empty.
-func ScanLocal(dir string, base map[string]state.File) (Local, error) {
+// missing dir is empty. found, if set, is called for each file listed.
+func ScanLocal(dir string, base map[string]state.File, found func()) (Local, error) {
 	local := Local{Files: map[string]LocalFile{}, Dirs: map[string]bool{}, Skipped: map[string]string{}}
 	err := filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
 		if p == dir {
@@ -71,6 +71,9 @@ func ScanLocal(dir string, base map[string]state.File) (Local, error) {
 				return nil
 			}
 			local.Files[rel] = f
+			if found != nil {
+				found()
+			}
 		default:
 			local.Skipped[rel] = "not a regular file"
 		}
@@ -116,8 +119,9 @@ func errText(err error) string {
 	return err.Error()
 }
 
-// ScanRemote lists the files under the Drive folder rootID.
-func ScanRemote(ctx context.Context, d gdrive.Drive, rootID string) (Remote, error) {
+// ScanRemote lists the files under the Drive folder rootID. found, if set,
+// is called for each file listed.
+func ScanRemote(ctx context.Context, d gdrive.Drive, rootID string, found func()) (Remote, error) {
 	remote := Remote{Files: map[string]RemoteFile{}, Dirs: map[string]string{}, Skipped: map[string]string{}}
 	var walk func(id, prefix string) error
 	walk = func(id, prefix string) error {
@@ -153,6 +157,9 @@ func ScanRemote(ctx context.Context, d gdrive.Drive, rootID string) (Remote, err
 			default:
 				remote.Files[rel] = RemoteFile{
 					ID: c.ID, MD5: c.MD5, Size: c.Size, ModifiedTime: c.ModifiedTime, ModifiedBy: c.ModifiedBy,
+				}
+				if found != nil {
+					found()
 				}
 			}
 		}

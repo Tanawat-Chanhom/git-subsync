@@ -98,13 +98,32 @@ Commit `.gitsubsync` and `.gitignore`. A teammate who clones the repo runs `git 
 `sync` asks before the first sync of a folder that already has files in `both` or `upload` mode. "First" means the folder has never been synced on this computer, or its Drive folder ID in `.gitsubsync` has changed since. `.gitsubsync` is committed by whoever edits the repo, so without this check a pull could link a folder of yours to their Drive folder, and the next sync would upload your files. Without a terminal, `sync` refuses instead of asking. Folders created by `add`, or missing ones like in a fresh clone, aren't asked about.
 
 ```
-↓ download  docs/brief.pdf
-⚠ conflict  logo.png → logo_copy_20261016-161200.png (changed locally and on Drive; local version kept as the copy)
-↓ download  old.txt (deleted locally; deletes aren't synced)
-↑ upload    notes.md
-  skip      Budget — Google Sheets file
-2 downloaded, 1 uploaded, 1 conflict, 1 skipped
+📥 download  docs/brief.pdf
+🔀 conflict  logo.png → logo_copy_20261016-161200.png (changed locally and on Drive; local version kept as the copy)
+📥 download  old.txt (deleted locally; deletes aren't synced)
+📤 upload    notes.md
+⏩ skip      Budget — Google Sheets file
+✅ 2 downloaded, 1 uploaded, 1 conflict, 1 skipped
 ```
+
+| Icon | Meaning |
+|------|---------|
+| 📥 | downloaded from Drive |
+| 📤 | uploaded to Drive |
+| 🔀 | conflict, resolved by keeping both versions |
+| 🛑 | conflict left alone (upload mode), or the summary of a run that left one |
+| ⏩ | skipped |
+| ❌ | failed, or the summary of a run where something failed |
+| ✅ | the summary of a run where everything worked |
+| 🔍 | scanning, or the summary of a dry run |
+
+On a terminal, a status line under the output shows what's happening. During the scan, it shows how many files each side has. During transfers, it shows the file being downloaded or uploaded, a bar with the overall percentage, the bytes done and total, the speed, and how many files are done:
+
+```
+⠼ 📥 photos/big.mov      [██████████░░░░░░░░░░]  52%  48.1/92.0 MB    5.2 MB/s  3/7
+```
+
+The status line is drawn on stderr and cleared when the sync ends. It appears only when stderr is a terminal and `TERM` isn't `dumb`, so scripts and logs get only the result lines.
 
 For every file, a sync compares three MD5 checksums: the local file, the Drive file, and the version from the last sync, which is kept in the local state. Downloads run before uploads.
 
@@ -149,10 +168,10 @@ A conflict is a file that changed on both sides since the last sync, or that dif
 In upload mode, the conflict shows who changed the file on Drive and when:
 
 ```
-⚠ conflict  docs/file1.txt — changed locally and on Drive (by Somchai, 2026-10-16 15:02). Not uploaded.
-3 uploaded, 1 conflict unresolved
-To upload your version, run: git subsync sync test-git-sync --force
-(the Drive version will be kept as file1_copy_<YYYYMMDD-HHMMSS>.txt)
+🛑 conflict  docs/file1.txt — changed locally and on Drive (by Somchai, 2026-10-16 15:02). Not uploaded.
+🛑 3 uploaded, 1 conflict unresolved
+💡 To upload your version, run: git subsync sync test-git-sync --force
+   (the Drive version will be kept as file1_copy_<YYYYMMDD-HHMMSS>.txt)
 ```
 
 There are two ways to resolve it:
@@ -373,6 +392,12 @@ GoReleaser is pinned to v2.18.3 in both workflows. The cask uses `hooks.post.ins
 - `drive` is a *restricted* scope. While the app is in Testing mode, only listed test users can sign in. Opening it to everyone requires Google's app verification plus a CASA security assessment.
 
 ## Changelog
+
+### Unreleased
+
+- Emoji in the sync output (📥 📤 🔀 🛑 ⏩ ❌ ✅) and on `add`, `remove` and sign-in messages.
+- A live status line on terminals: file counts while scanning, then a progress bar with the current file, percentage, bytes, speed and file count.
+- Commands detect terminals properly, so `</dev/null` no longer counts as one.
 
 ### v0.2.0 (2026-10-16)
 
