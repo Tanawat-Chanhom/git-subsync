@@ -393,7 +393,7 @@ GoReleaser is pinned to v2.18.3 in both workflows. The cask uses `hooks.post.ins
 
 ## Changelog
 
-### Unreleased
+### v0.2.1 (2026-10-16)
 
 - Emoji in the sync output (📥 📤 🔀 🛑 ⏩ ❌ ✅) and on `add`, `remove` and sign-in messages.
 - A live status line on terminals: file counts while scanning, then a progress bar with the current file, percentage, bytes, speed and file count.
