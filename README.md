@@ -374,7 +374,7 @@ GoReleaser is pinned to v2.18.3 in both workflows. The cask uses `hooks.post.ins
 
 ## Changelog
 
-### v0.2.0 (unreleased)
+### v0.2.0 (2026-10-16)
 
 - `add`, `sync`, `list` and `remove` commands, with a committed `.gitsubsync` file and `.gitignore` entries.
 - `both`, `download` and `upload` modes. Conflicts keep one version as a `_copy_` file. In upload mode, conflicts are reported with who changed the file and when, exit with code 2, and can be resolved with `sync --force`.
