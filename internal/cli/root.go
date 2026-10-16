@@ -18,16 +18,26 @@ func NewRootCmd() *cobra.Command {
 		Version:       version.String(),
 		SilenceUsage:  true,
 		SilenceErrors: true,
+		// Users run this as `git subsync`; show that in help output.
+		Annotations: map[string]string{cobra.CommandDisplayNameAnnotation: "git subsync"},
 	}
 	root.SetVersionTemplate("git-subsync {{.Version}}\n")
+	root.CompletionOptions.DisableDefaultCmd = true
 
 	root.AddCommand(
+		newLoginCmd(),
+		newLogoutCmd(),
+		newWhoamiCmd(),
 		newVersionCmd(),
 	)
 	return root
 }
 
-// Execute runs the root command with the given context.
+// Execute runs the CLI with os.Args. Errors carry user-facing messages.
 func Execute(ctx context.Context) error {
-	return NewRootCmd().ExecuteContext(ctx)
+	return run(ctx, NewRootCmd())
+}
+
+func run(ctx context.Context, root *cobra.Command) error {
+	return withHint(root.ExecuteContext(ctx))
 }
