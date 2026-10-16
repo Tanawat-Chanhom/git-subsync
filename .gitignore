@@ -1,0 +1,12 @@
+# Build output
+/git-subsync
+/dist/
+
+# Local env files (never commit OAuth client secrets)
+.env
+.env.*
+
+# Google OAuth client downloads and screenshots of them
+client_secret_*.json
+/o-auth.json
+/Screenshot *.png
