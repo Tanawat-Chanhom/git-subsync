@@ -38,7 +38,7 @@ changelog:
   sort: asc
 
 homebrew_casks:
-  - name: tae-subsync
+  - name: git-subsync
     binaries: [git-subsync]
     homepage: https://github.com/Tanawat-Chanhom/git-subsync
     description: Git extension that syncs a repo folder with a Google Drive folder

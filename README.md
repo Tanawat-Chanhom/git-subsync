@@ -9,7 +9,7 @@ A Git extension that will keep a folder in a Git repo in sync with a Google Driv
 - `git subsync login`, `logout`, `whoami` and `version` commands.
 - Browser sign-in with Google using OAuth with PKCE. The token is stored locally and refreshes automatically.
 - `whoami` makes a real Drive API call (`about.get`), so it proves Drive access works.
-- Release builds for macOS and Linux (amd64 and arm64), published as a Homebrew cask (`tae-subsync`).
+- Release builds for macOS and Linux (amd64 and arm64), published as a Homebrew cask (`git-subsync`).
 
 Not built yet: `add`, `sync`, a `.gitsubsync` config file, any upload or download, Windows support, and a homebrew-core formula.
 
@@ -18,7 +18,7 @@ Not built yet: `add`, `sync`, a `.gitsubsync` config file, any upload or downloa
 ### macOS (Homebrew)
 
 ```sh
-brew install --cask tanawat-chanhom/tap/tae-subsync
+brew install --cask tanawat-chanhom/tap/git-subsync
 ```
 
 This puts `git-subsync` on your `PATH`, and git then runs it as `git subsync`.
@@ -81,7 +81,7 @@ While the Google OAuth app is in **Testing** mode, Google expires refresh tokens
 
 ```sh
 git subsync logout                    # optional: revoke access with Google first
-brew uninstall --cask tae-subsync     # add --zap to also delete the saved token
+brew uninstall --cask git-subsync     # add --zap to also delete the saved token
 ```
 
 On Linux, delete the binary and `~/.config/git-subsync`.
@@ -174,7 +174,7 @@ The real Google sign-in is tested by hand.
 1. It checks that all three secrets are set, and stops before building anything if one is missing.
 2. GoReleaser builds darwin/linux × amd64/arm64 with the version, commit, date and OAuth client injected through ldflags.
 3. GoReleaser creates a GitHub Release with the tarballs and `checksums.txt`.
-4. GoReleaser pushes `Casks/tae-subsync.rb` to [`Tanawat-Chanhom/homebrew-tap`](https://github.com/Tanawat-Chanhom/homebrew-tap).
+4. GoReleaser pushes `Casks/git-subsync.rb` to [`Tanawat-Chanhom/homebrew-tap`](https://github.com/Tanawat-Chanhom/homebrew-tap). The tap's `cask_renames.json` maps the old `tae-subsync` name to it.
 
 ```sh
 goreleaser check
@@ -185,11 +185,11 @@ git tag -a vX.Y.Z -m "vX.Y.Z" && git push origin vX.Y.Z
 After a release, check for:
 - a GitHub Release with 4 tarballs and `checksums.txt`
 - a commit `Update git-subsync cask to vX.Y.Z` in the tap
-- a working `brew install --cask tanawat-chanhom/tap/tae-subsync`
+- a working `brew install --cask tanawat-chanhom/tap/git-subsync`
 
 If the release fails at "Check required secrets", nothing has been published. Fix the secrets and click **Re-run all jobs**; the tag doesn't need to be recreated.
 
-GoReleaser is pinned to v2.18.3 in both workflows. The cask uses `hooks.post.install`. Once GoReleaser is upgraded to v2.19 or later, switch it to `install_steps`, or `goreleaser check` will fail on the deprecated field.
+GoReleaser is pinned to v2.18.3 in both workflows. The cask uses `hooks.post.install`, which generates a `postflight` block. Homebrew 7 accepts it but warns that `postflight` is deprecated in favor of `postflight_steps`. Once GoReleaser is upgraded to v2.19 or later, switch to `install_steps`, because `goreleaser check` fails on the deprecated field. Then check that the Homebrew warning is gone.
 
 ### Security notes
 
@@ -204,7 +204,7 @@ GoReleaser is pinned to v2.18.3 in both workflows. The cask uses `hooks.post.ins
 - Loopback OAuth with PKCE and state validation, a 3-minute timeout, and offline access.
 - Token store with `0700`/`0600` permissions; refreshed tokens are written back to disk.
 - Session-expiry detection (`invalid_grant`) with an actionable message.
-- GoReleaser and GitHub Actions release to GitHub Releases and the `tae-subsync` Homebrew cask.
+- GoReleaser and GitHub Actions release to GitHub Releases and a Homebrew cask. It was first published as `tae-subsync` and renamed to `git-subsync` the same day. The old name still resolves through the tap's `cask_renames.json`; Homebrew 7 asks you to run `brew trust --cask tanawat-chanhom/tap/git-subsync` first.
 
 ## License
 
