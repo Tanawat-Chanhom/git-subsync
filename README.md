@@ -95,6 +95,8 @@ Commit `.gitsubsync` and `.gitignore`. A teammate who clones the repo runs `git 
 
 `git subsync sync` syncs every linked folder, and `git subsync sync <path>...` syncs only those. `--dry-run` prints what would happen, including conflicts, without changing anything.
 
+`sync` asks before the first sync of a folder that already has files in `both` or `upload` mode. "First" means the folder has never been synced on this computer, or its Drive folder ID in `.gitsubsync` has changed since. `.gitsubsync` is committed by whoever edits the repo, so without this check a pull could link a folder of yours to their Drive folder, and the next sync would upload your files. Without a terminal, `sync` refuses instead of asking. Folders created by `add`, or missing ones like in a fresh clone, aren't asked about.
+
 ```
 ↓ download  docs/brief.pdf
 ⚠ conflict  logo.png → logo_copy_20261016-161200.png (changed locally and on Drive; local version kept as the copy)
@@ -178,6 +180,7 @@ These are skipped, with a `skip` line on every sync:
 - Right before overwriting a file on either side, git-subsync checks that it hasn't changed since the scan. If it has, the file is skipped until the next sync.
 - The state is saved after every file, so you can rerun an interrupted sync.
 - A lock file stops two syncs of the same folder from running at once.
+- `.gitsubsync` paths must be inside the repo, and a path that goes through a symbolic link is refused, so a committed file can't make git-subsync write or delete outside the repo.
 - Rate limits and server errors are retried with exponential backoff.
 
 ### Exit codes
@@ -255,6 +258,7 @@ You can also revoke access at any time from your Google Account's [third-party c
 | `Drive folder <id> doesn't exist, or <email> has no access to it` | Check the link, and that the folder is shared with that account. `git subsync whoami` shows which account is signed in. |
 | `warning: ... can't add files to ...` | Your account can only view the folder. Use `--mode download`, or ask for edit access. |
 | `another git-subsync process (pid N) is syncing this folder` | Wait for it to finish. If that process isn't running, delete the lock file named in the message. |
+| `... already has files but has never been synced with Drive folder ...` | Check that the Drive folder in `.gitsubsync` is the one you expect, then run `git subsync sync <path>` in a terminal and answer `y`. See [Syncing](#syncing). |
 | `sync` exits with code 2 | Upload-mode conflicts. See [Conflicts](#conflicts). |
 | A deleted file comes back | Deletes aren't synced yet. Delete it on both sides before the next sync. |
 
@@ -377,6 +381,7 @@ GoReleaser is pinned to v2.18.3 in both workflows. The cask uses `hooks.post.ins
 - `sync --dry-run`.
 - Downloads and uploads are checked against Drive's MD5. Sync state is saved after every file, and a lock file stops two syncs of the same folder from running at once. Rate limits and server errors are retried.
 - Drive commands sign you in first when you're not logged in.
+- `sync` asks before the first upload from a folder that already has files. `.gitsubsync` paths that lead outside the repo are refused.
 
 ### v0.1.0 (2026-10-16)
 

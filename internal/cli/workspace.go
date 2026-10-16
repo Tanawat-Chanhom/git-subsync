@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -115,8 +116,9 @@ func syncFolder(cmd *cobra.Command, w *workspace, d gdrive.Drive, user gdrive.Us
 	if err != nil {
 		return 1, err
 	}
-	if st == nil || st.Folder != e.Folder {
-		st = state.New(e.Folder) // never synced, or linked to another folder since
+	firstSync := st == nil || st.Folder != e.Folder // or linked to another folder since
+	if firstSync {
+		st = state.New(e.Folder)
 	}
 
 	folder, err := driveFolder(ctx, d, user, e.Folder)
@@ -141,6 +143,10 @@ func syncFolder(cmd *cobra.Command, w *workspace, d gdrive.Drive, user gdrive.Us
 		return 1, err
 	case !fi.IsDir():
 		return 1, fmt.Errorf("%s exists but is not a folder", e.Path)
+	case firstSync && mode != syncer.Download && !opts.dryRun:
+		if err := confirmFirstSync(cmd, e, mode, folder, dir); err != nil {
+			return 1, err
+		}
 	}
 
 	res, err := syncer.Sync(ctx, d, dir, st, store.Save, syncer.Options{
@@ -166,6 +172,37 @@ func syncFolder(cmd *cobra.Command, w *workspace, d gdrive.Drive, user gdrive.Us
 		return 2, nil
 	}
 	return 0, nil
+}
+
+// confirmFirstSync asks before the first sync of a folder that already has
+// files, in a mode that uploads. .gitsubsync comes from whoever committed
+// it, and could link a folder holding files never meant for Drive.
+func confirmFirstSync(cmd *cobra.Command, e repo.Entry, mode syncer.Mode, folder gdrive.File, dir string) error {
+	names, err := os.ReadDir(dir)
+	if err != nil || len(names) == 0 {
+		return err
+	}
+	msg := fmt.Sprintf("%s already has files but has never been synced with Drive folder %q (%s) on this computer. In %s mode, files that are only here get uploaded.",
+		e.Path, folder.Name, folder.ID, mode)
+	if !interactive() {
+		return fmt.Errorf("%s Run `git subsync sync %s` in a terminal to confirm.", msg, shellQuote(e.Path))
+	}
+	if !confirm(cmd, msg+"\nSync it? [y/N] ") {
+		return fmt.Errorf("%s not synced", e.Path)
+	}
+	return nil
+}
+
+// confirm prints prompt to stderr and reports whether the answer on stdin
+// is yes.
+func confirm(cmd *cobra.Command, prompt string) bool {
+	fmt.Fprint(cmd.ErrOrStderr(), prompt)
+	line, _ := bufio.NewReader(cmd.InOrStdin()).ReadString('\n')
+	switch strings.ToLower(strings.TrimSpace(line)) {
+	case "y", "yes":
+		return true
+	}
+	return false
 }
 
 // worseExit combines exit codes: a failure (1) outranks unresolved

@@ -38,11 +38,12 @@ func newTestRepo(t *testing.T) *testRepo {
 
 	d := drivetest.New()
 	r := &testRepo{t: t, root: root, d: d, folder: d.AddFolder("", "Design")}
-	orig := openDrive
+	origDrive, origInteractive := openDrive, interactive
 	openDrive = func(context.Context, *cobra.Command) (gdrive.Drive, gdrive.User, error) {
 		return d, gdrive.User{DisplayName: "Me", Email: "me@example.com"}, nil
 	}
-	t.Cleanup(func() { openDrive = orig })
+	interactive = func() bool { return false }
+	t.Cleanup(func() { openDrive, interactive = origDrive, origInteractive })
 	return r
 }
 
@@ -62,8 +63,15 @@ func git(t *testing.T, dir string, args ...string) string {
 // printed as main prints it) and the exit code.
 func cli(t *testing.T, args ...string) (string, string, int) {
 	t.Helper()
+	return cliWithInput(t, "", args...)
+}
+
+// cliWithInput is cli with stdin.
+func cliWithInput(t *testing.T, stdin string, args ...string) (string, string, int) {
+	t.Helper()
 	var stdout, stderr bytes.Buffer
 	root := NewRootCmd()
+	root.SetIn(strings.NewReader(stdin))
 	root.SetArgs(args)
 	root.SetOut(&stdout)
 	root.SetErr(&stderr)
@@ -471,6 +479,50 @@ func TestSyncErrors(t *testing.T) {
 	if _, stderr, code := cli(t, "sync"); code != 1 || !strings.Contains(stderr, "git-subsync: a: Drive folder "+r.folder+" doesn't exist, or me@example.com has no access to it") {
 		t.Fatalf("exit %d, stderr %q", code, stderr)
 	}
+}
+
+// A folder that already has files is synced for the first time in an
+// uploading mode only after a person confirms it: someone else's
+// .gitsubsync could point it at their Drive folder.
+func TestFirstSyncOfFolderWithFilesNeedsConfirmation(t *testing.T) {
+	r := newTestRepo(t)
+	r.write("secrets/key.txt", "secret")
+	r.write(".gitsubsync", "[subsync \"secrets\"]\n\tpath = secrets\n\tfolder = "+r.folder+"\n\tmode = upload\n")
+
+	_, stderr, code := cli(t, "sync")
+	if code != 1 || !strings.Contains(stderr, `secrets already has files but has never been synced with Drive folder "Design"`) ||
+		!strings.Contains(stderr, "in a terminal to confirm") {
+		t.Fatalf("non-interactive: exit %d, stderr %q", code, stderr)
+	}
+	if out := r.mustCLI(0, "sync", "--dry-run"); !strings.Contains(out, "↑ upload    key.txt") {
+		t.Fatalf("dry run needs no confirmation:\n%s", out)
+	}
+
+	interactive = func() bool { return true }
+	_, stderr, code = cliWithInput(t, "n\n", "sync")
+	if code != 1 || !strings.Contains(stderr, "Sync it? [y/N]") || !strings.Contains(stderr, "secrets not synced") {
+		t.Fatalf("declined: exit %d, stderr %q", code, stderr)
+	}
+	if r.d.Writes() != 0 {
+		t.Fatal("uploaded without confirmation")
+	}
+
+	if _, stderr, code := cliWithInput(t, "y\n", "sync"); code != 0 || r.driveFiles()["key.txt"] != "secret" {
+		t.Fatalf("confirmed: exit %d, stderr %q, Drive %v", code, stderr, r.driveFiles())
+	}
+	interactive = func() bool { return false }
+	r.mustCLI(0, "sync") // synced before: no question
+
+	// Pointing the entry at another Drive folder asks again.
+	other := r.d.AddFolder("", "Elsewhere")
+	r.write(".gitsubsync", "[subsync \"secrets\"]\n\tpath = secrets\n\tfolder = "+other+"\n\tmode = upload\n")
+	if _, stderr, code := cli(t, "sync"); code != 1 || !strings.Contains(stderr, `never been synced with Drive folder "Elsewhere"`) {
+		t.Fatalf("changed folder: exit %d, stderr %q", code, stderr)
+	}
+
+	// Download mode never uploads, so it doesn't ask.
+	r.write(".gitsubsync", "[subsync \"secrets\"]\n\tpath = secrets\n\tfolder = "+other+"\n\tmode = download\n")
+	r.mustCLI(0, "sync")
 }
 
 // A committed symlink must not let a sync write outside the repository.
