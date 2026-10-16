@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -16,7 +17,7 @@ import (
 )
 
 const (
-	barCells     = 20
+	barCells     = 16
 	progressTick = 120 * time.Millisecond
 	clearLine    = "\r\x1b[K"
 )
@@ -24,8 +25,9 @@ const (
 var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 
 // liveProgress draws a status line on a terminal while a folder syncs:
-// file counts while scanning, then a progress bar for the transfers.
-// Result lines written to it go to out, above the status line.
+// file counts while scanning, then a progress bar for the transfers, which
+// may run several at once. Result lines written to it go to out, above the
+// status line.
 type liveProgress struct {
 	out   io.Writer // result lines
 	tty   io.Writer // the status line
@@ -41,12 +43,13 @@ type liveProgress struct {
 	local     int
 	remote    int
 	transfers int
-	index     int // of the current transfer, from 1
+	finished  int
 	total     int64
 	done      int64
-	path      string
-	up        bool
-	started   time.Time // of the first transfer
+	active    []*liveTransfer // in the order they started
+	last      string          // path of the last transfer started
+	up        bool            // whether it's an upload
+	started   time.Time       // of the first transfer
 
 	stop    chan struct{}
 	stopped chan struct{}
@@ -136,24 +139,40 @@ func (p *liveProgress) Planned(transfers int, bytes int64) {
 	p.draw()
 }
 
-func (p *liveProgress) Start(path string, size int64, up bool) {
+func (p *liveProgress) Start(path string, size int64, up bool) syncer.Transfer {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.index++
-	p.path, p.up = path, up
+	t := &liveTransfer{p: p, path: path}
+	p.active = append(p.active, t)
+	p.last, p.up = path, up
 	if p.started.IsZero() {
 		p.started = p.now()
 	}
 	p.draw()
+	return t
 }
 
-func (p *liveProgress) Add(n int64) {
+// liveTransfer is one transfer shown by a liveProgress.
+type liveTransfer struct {
+	p    *liveProgress
+	path string
+}
+
+func (t *liveTransfer) Add(n int64) {
+	t.p.mu.Lock()
+	defer t.p.mu.Unlock()
+	t.p.done += n
+}
+
+func (t *liveTransfer) Done() {
+	p := t.p
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.done += n
+	if i := slices.Index(p.active, t); i >= 0 {
+		p.active = slices.Delete(p.active, i, i+1)
+		p.finished++
+	}
 }
-
-func (p *liveProgress) Done() {}
 
 func (p *liveProgress) draw() {
 	line := p.status()
@@ -179,7 +198,7 @@ func (p *liveProgress) status() string {
 	if p.scanning {
 		return fitEnd(fmt.Sprintf("%s 🔍 Scanning %s… %d local · %d on Drive", spin, p.name, p.local, p.remote), room)
 	}
-	if p.index == 0 {
+	if p.last == "" {
 		return "" // nothing to transfer, or not started yet
 	}
 
@@ -188,7 +207,7 @@ func (p *liveProgress) status() string {
 	case p.total > 0:
 		pct = int(p.done * 100 / p.total)
 	case p.transfers > 0:
-		pct = p.index * 100 / p.transfers
+		pct = p.finished * 100 / p.transfers
 	}
 	pct = min(max(pct, 0), 100)
 	filled := pct * barCells / 100
@@ -199,8 +218,17 @@ func (p *liveProgress) status() string {
 		icon = "📤"
 	}
 	head := spin + " " + icon + " "
+	// The oldest transfer still running, and how many more run with it.
+	label := p.last
+	if len(p.active) > 0 {
+		label = p.active[0].path
+		if more := len(p.active) - 1; more > 0 {
+			label += fmt.Sprintf(" +%d", more)
+		}
+	}
+
 	// Fixed widths keep the bar in place as the numbers change.
-	count := fmt.Sprintf("%d/%d", p.index, p.transfers)
+	count := fmt.Sprintf("%*d/%d", len(fmt.Sprint(p.transfers)), p.finished, p.transfers)
 	sizes := fmt.Sprintf("%14s", formatPair(p.done, p.total))
 	speed := ""
 	if elapsed := p.now().Sub(p.started); elapsed >= 500*time.Millisecond {
@@ -216,7 +244,7 @@ func (p *liveProgress) status() string {
 		fmt.Sprintf("  %3d%%  %s", pct, count),
 	} {
 		if name := room - cells(head) - cells(tail); name >= 12 {
-			return head + fitStart(p.path, name) + tail
+			return head + fitStart(label, name) + tail
 		}
 	}
 	return fitEnd(fmt.Sprintf("%s %s %3d%%", spin, icon, pct), room)

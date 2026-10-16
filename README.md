@@ -15,7 +15,7 @@ A Git extension that keeps a folder in a Git repo in sync with a Google Drive fo
 
 v0.1 added `login`, `logout`, `whoami`, `version` and the Homebrew cask (macOS and Linux, amd64 and arm64).
 
-Not built yet: syncing deletes, `status` and `config` commands, automatic sync (Git hooks or watching), exporting Google Docs, ignore patterns, parallel transfers, Windows support, and a homebrew-core formula.
+Not built yet: syncing deletes, `status` and `config` commands, automatic sync (Git hooks or watching), exporting Google Docs, ignore patterns, Windows support, and a homebrew-core formula.
 
 ## Install
 
@@ -88,12 +88,15 @@ git commit -m "Add design folder from Google Drive"
 | `--mode both\|download\|upload` | Sync direction, `both` by default. See [Modes](#modes). |
 | `--no-sync` | Link the folder without syncing it. |
 | `--force` | Allow a folder that already has files in it. Files that differ from Drive become conflicts, so nothing is lost. |
+| `-j`, `--jobs N` | Transfer up to N files at once during the first sync (1–32, default 4). |
 
 Commit `.gitsubsync` and `.gitignore`. A teammate who clones the repo runs `git subsync sync`, which creates the folder and downloads it.
 
 ### Syncing
 
 `git subsync sync` syncs every linked folder, and `git subsync sync <path>...` syncs only those. `--dry-run` prints what would happen, including conflicts, without changing anything.
+
+Up to 4 files are transferred at once. Change that with `-j`/`--jobs N`, from 1 to 32. More jobs help with many small files. Too many can hit Google's rate limits, which git-subsync retries with backoff, so going above 8 rarely helps. Drive subfolders are listed in parallel too, and the local folder is scanned at the same time. Result lines appear as files finish, so with more than one job their order varies.
 
 `sync` asks before the first sync of a folder that already has files in `both` or `upload` mode. "First" means the folder has never been synced on this computer, or its Drive folder ID in `.gitsubsync` has changed since. `.gitsubsync` is committed by whoever edits the repo, so without this check a pull could link a folder of yours to their Drive folder, and the next sync would upload your files. Without a terminal, `sync` refuses instead of asking. Folders created by `add`, or missing ones like in a fresh clone, aren't asked about.
 
@@ -117,15 +120,15 @@ Commit `.gitsubsync` and `.gitignore`. A teammate who clones the repo runs `git 
 | ✅ | the summary of a run where everything worked |
 | 🔍 | scanning, or the summary of a dry run |
 
-On a terminal, a status line under the output shows what's happening. During the scan, it shows how many files each side has. During transfers, it shows the file being downloaded or uploaded, a bar with the overall percentage, the bytes done and total, the speed, and how many files are done:
+On a terminal, a status line under the output shows what's happening. During the scan, it shows how many files each side has. During transfers, it shows the oldest file still transferring, plus `+N` for the others running alongside it. It also shows a bar with the overall percentage, the bytes done and total, the speed, and how many files are done:
 
 ```
-⠼ 📥 photos/big.mov      [██████████░░░░░░░░░░]  52%  48.1/92.0 MB    5.2 MB/s  3/7
+⠼ 📥 photos/big.mov +3   [████████░░░░░░░░]  52%    48.1/92.0 MB    5.2 MB/s  3/7
 ```
 
 The status line is drawn on stderr and cleared when the sync ends. It appears only when stderr is a terminal and `TERM` isn't `dumb`, so scripts and logs get only the result lines.
 
-For every file, a sync compares three MD5 checksums: the local file, the Drive file, and the version from the last sync, which is kept in the local state. Downloads run before uploads.
+For every file, a sync compares three MD5 checksums: the local file, the Drive file, and the version from the last sync, which is kept in the local state. All downloads finish before uploads start.
 
 | Case | `both` | `download` | `upload` |
 |------|--------|------------|----------|
@@ -197,7 +200,8 @@ These are skipped, with a `skip` line on every sync:
 - Downloads are written to a temporary file in the same folder and checked against Drive's MD5 before being renamed into place.
 - A changed file is uploaded as a new version of the same Drive file, so it keeps its file ID. Files over 8 MiB use resumable uploads. The MD5 that Drive reports is checked against the bytes sent.
 - Right before overwriting a file on either side, git-subsync checks that it hasn't changed since the scan. If it has, the file is skipped until the next sync.
-- The state is saved after every file, so you can rerun an interrupted sync.
+- The state is saved as files finish (at most once a second) and when the sync ends, including on Ctrl-C. You can rerun an interrupted sync. If it stopped before saving a file, the next sync finds the file identical on both sides and just records it.
+- Two uploads into a new folder never create the Drive folder twice.
 - A lock file stops two syncs of the same folder from running at once.
 - `.gitsubsync` paths must be inside the repo, and a path that goes through a symbolic link is refused, so a committed file can't make git-subsync write or delete outside the repo.
 - Rate limits and server errors are retried with exponential backoff.
@@ -392,6 +396,12 @@ GoReleaser is pinned to v2.18.3 in both workflows. The cask uses `hooks.post.ins
 - `drive` is a *restricted* scope. While the app is in Testing mode, only listed test users can sign in. Opening it to everyone requires Google's app verification plus a CASA security assessment.
 
 ## Changelog
+
+### Unreleased
+
+- Parallel sync: up to 4 files transfer at once by default. `-j`/`--jobs N` on `sync` and `add` sets it from 1 to 32. Drive subfolders are listed in parallel, and the local scan runs at the same time.
+- The status line shows the oldest running transfer with `+N` for the others, and the number of files finished.
+- The sync state is saved at most once a second while files transfer, and always at the end, including on Ctrl-C.
 
 ### v0.2.1 (2026-10-16)
 

@@ -12,6 +12,7 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/Tanawat-Chanhom/git-subsync/internal/gdrive"
 	"github.com/Tanawat-Chanhom/git-subsync/internal/state"
@@ -119,15 +120,34 @@ func errText(err error) string {
 	return err.Error()
 }
 
-// ScanRemote lists the files under the Drive folder rootID. found, if set,
-// is called for each file listed.
-func ScanRemote(ctx context.Context, d gdrive.Drive, rootID string, found func()) (Remote, error) {
+// ScanRemote lists the files under the Drive folder rootID, listing up to
+// jobs folders at once. found, if set, is called for each file listed.
+func ScanRemote(ctx context.Context, d gdrive.Drive, rootID string, jobs int, found func()) (Remote, error) {
 	remote := Remote{Files: map[string]RemoteFile{}, Dirs: map[string]string{}, Skipped: map[string]string{}}
-	var walk func(id, prefix string) error
-	walk = func(id, prefix string) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	var (
+		mu       sync.Mutex // guards remote and firstErr
+		firstErr error
+		wg       sync.WaitGroup
+		sem      = make(chan struct{}, max(jobs, 1))
+	)
+	var walk func(id, prefix string)
+	walk = func(id, prefix string) {
+		defer wg.Done()
+		sem <- struct{}{}
 		children, err := d.List(ctx, id)
+		<-sem
+
+		mu.Lock()
+		defer mu.Unlock()
+		if firstErr != nil {
+			return
+		}
 		if err != nil {
-			return err
+			firstErr = err
+			cancel()
+			return
 		}
 		count := map[string]int{}
 		for _, c := range children {
@@ -138,7 +158,7 @@ func ScanRemote(ctx context.Context, d gdrive.Drive, rootID string, found func()
 				continue
 			}
 			if why := invalidName(c.Name); why != "" {
-				remote.Skipped[path.Join(prefix, strings.ReplaceAll(c.Name, "/", "∕"))] = why
+				remote.Skipped[path.Join(prefix, strings.ReplaceAll(c.Name, "/", "\u2215"))] = why
 				continue
 			}
 			rel := path.Join(prefix, c.Name)
@@ -147,9 +167,8 @@ func ScanRemote(ctx context.Context, d gdrive.Drive, rootID string, found func()
 				remote.Skipped[rel] = fmt.Sprintf("%d items with this name in the Drive folder", count[c.Name])
 			case c.IsFolder():
 				remote.Dirs[rel] = c.ID
-				if err := walk(c.ID, rel); err != nil {
-					return err
-				}
+				wg.Add(1)
+				go walk(c.ID, rel)
 			case strings.HasPrefix(c.MimeType, googleAppsPrefix):
 				remote.Skipped[rel] = googleKind(c.MimeType)
 			case c.MD5 == "":
@@ -163,9 +182,11 @@ func ScanRemote(ctx context.Context, d gdrive.Drive, rootID string, found func()
 				}
 			}
 		}
-		return nil
 	}
-	return remote, walk(rootID, "")
+	wg.Add(1)
+	go walk(rootID, "")
+	wg.Wait()
+	return remote, firstErr
 }
 
 // invalidName says why a Drive name can't be a local file name, or returns

@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"os"
 	"strings"
@@ -45,12 +46,12 @@ func TestProgressTransfer(t *testing.T) {
 	if tty.Len() != 0 {
 		t.Fatalf("drew %q before the first transfer", tty.String())
 	}
-	p.Start("photos/big.mov", 1_500_000, false)
+	big := p.Start("photos/big.mov", 1_500_000, false)
 	*clock = clock.Add(time.Second)
-	p.Add(1_000_000)
+	big.Add(1_000_000)
 	p.draw()
 	got := lastStatus(tty)
-	for _, want := range []string{"⠋ 📥 photos/big.mov ", "[██████████░░░░░░░░░░]  50%", "1.0/2.0 MB", "1.0 MB/s", "1/2"} {
+	for _, want := range []string{"⠋ 📥 photos/big.mov ", "[████████░░░░░░░░]  50%", "1.0/2.0 MB", "1.0 MB/s", "0/2"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("status %q lacks %q", got, want)
 		}
@@ -59,11 +60,60 @@ func TestProgressTransfer(t *testing.T) {
 		t.Errorf("status is %d columns, want 99 (padded so the bar stays put)", w)
 	}
 
-	p.Start("notes.md", 500_000, true)
-	p.Add(-200_000) // an upload starting over
+	big.Done()
+	notes := p.Start("notes.md", 500_000, true)
+	notes.Add(-200_000) // an upload starting over
 	p.draw()
-	if got := lastStatus(tty); !strings.Contains(got, "📤 notes.md") || !strings.Contains(got, " 40%") || !strings.Contains(got, "2/2") {
+	if got := lastStatus(tty); !strings.Contains(got, "📤 notes.md") || !strings.Contains(got, " 40%") || !strings.Contains(got, "1/2") {
 		t.Errorf("status = %q", got)
+	}
+}
+
+// With transfers running at once, the oldest is shown with a count of the
+// others.
+func TestProgressParallelTransfers(t *testing.T) {
+	p, _, tty, _ := testProgress(100)
+	p.Planned(5, 500)
+	a := p.Start("a.txt", 100, false)
+	b := p.Start("b.txt", 100, false)
+	p.Start("c.txt", 100, false)
+	if got := lastStatus(tty); !strings.Contains(got, "📥 a.txt +2 ") || !strings.Contains(got, "0/5") {
+		t.Fatalf("status = %q", got)
+	}
+	if got := lastStatus(tty); !strings.HasSuffix(got, "0/5") {
+		t.Fatalf("status = %q", got)
+	}
+	a.Done()
+	a.Done() // twice is harmless
+	b.Add(100)
+	b.Done()
+	p.draw()
+	if got := lastStatus(tty); !strings.Contains(got, "📥 c.txt ") || strings.Contains(got, "+") || !strings.Contains(got, "2/5") || !strings.Contains(got, " 20%") {
+		t.Fatalf("status = %q", got)
+	}
+}
+
+// The bar stays in the same column as the counts grow, and the speed fits
+// on an 80-column terminal.
+func TestProgressLayoutIsStable(t *testing.T) {
+	p, _, tty, clock := testProgress(80)
+	p.Planned(12, 12_000_000)
+	col := -1
+	for i := range 12 {
+		tr := p.Start(fmt.Sprintf("photos/IMG_%d.JPG", 9100+i*7), 1_000_000, false)
+		*clock = clock.Add(time.Second)
+		tr.Add(1_000_000)
+		tr.Done()
+		p.draw()
+		got := lastStatus(tty)
+		c := cells(got[:strings.Index(got, "[")])
+		if col >= 0 && c != col {
+			t.Fatalf("bar moved from column %d to %d: %q", col, c, got)
+		}
+		col = c
+		if !strings.Contains(got, "MB/s") {
+			t.Fatalf("no speed on 80 columns: %q", got)
+		}
 	}
 }
 
@@ -71,8 +121,7 @@ func TestProgressFitsNarrowTerminals(t *testing.T) {
 	for _, width := range []int{20, 30, 45, 60} {
 		p, _, tty, _ := testProgress(width)
 		p.Planned(1, 10)
-		p.Start("a/very/long/path/to/some/deeply/nested/file-with-a-long-name.txt", 10, false)
-		p.Add(5)
+		p.Start("a/very/long/path/to/some/deeply/nested/file-with-a-long-name.txt", 10, false).Add(5)
 		p.draw()
 		if got := lastStatus(tty); cells(got) > width-1 {
 			t.Errorf("width %d: status %q is %d columns", width, got, cells(got))

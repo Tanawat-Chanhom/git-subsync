@@ -14,6 +14,7 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Tanawat-Chanhom/git-subsync/internal/gdrive"
@@ -26,12 +27,13 @@ type Options struct {
 	Force    bool
 	DryRun   bool      // print the plan without changing anything
 	Now      time.Time // local time; names conflict copies
+	Jobs     int       // files transferred, and Drive folders listed, at once; 0 means 1
 	Out      io.Writer // one line per action
 	Progress Progress  // optional
 }
 
 // Progress follows a sync while it runs, e.g. to draw a progress bar. Sync
-// calls it from one goroutine.
+// calls it from several goroutines at once.
 type Progress interface {
 	// Scanned reports how many files the scans have found so far.
 	Scanned(local, remote int)
@@ -40,21 +42,25 @@ type Progress interface {
 	Planned(transfers int, bytes int64)
 	// Start begins the transfer of a file of size bytes; up is true for an
 	// upload.
-	Start(path string, size int64, up bool)
+	Start(path string, size int64, up bool) Transfer
+}
+
+// Transfer follows one file's download or upload.
+type Transfer interface {
 	// Add reports n more bytes transferred. n is negative when an upload
 	// starts over.
 	Add(n int64)
-	// Done ends the current transfer, whether it worked or not.
+	// Done ends the transfer, whether it worked or not.
 	Done()
 }
 
 type noProgress struct{}
 
-func (noProgress) Scanned(int, int)          {}
-func (noProgress) Planned(int, int64)        {}
-func (noProgress) Start(string, int64, bool) {}
-func (noProgress) Add(int64)                 {}
-func (noProgress) Done()                     {}
+func (noProgress) Scanned(int, int)                   {}
+func (noProgress) Planned(int, int64)                 {}
+func (noProgress) Start(string, int64, bool) Transfer { return noProgress{} }
+func (noProgress) Add(int64)                          {}
+func (noProgress) Done()                              {}
 
 // Result counts what a run did, or would do in a dry run.
 type Result struct {
@@ -110,26 +116,48 @@ func plural(n int, s string) string {
 }
 
 // Sync syncs the local folder dir with the Drive folder st.Folder. It
-// updates st as files are synced and calls save after every change, so an
-// interrupted run can be repeated. Failed actions are reported and counted
-// in the result; the error is for failures that stop the whole run.
+// updates st as files are synced and saves it with save as it goes (at most
+// once a second) and at the end, so an interrupted run can be repeated.
+// Failed actions are reported and counted in the result; the error is for
+// failures that stop the whole run.
 func Sync(ctx context.Context, d gdrive.Drive, dir string, st *state.State, save func(*state.State) error, opts Options) (Result, error) {
 	prog := opts.Progress
 	if prog == nil {
 		prog = noProgress{}
 	}
-	var nLocal, nRemote int
-	local, err := ScanLocal(dir, st.Files, func() { nLocal++; prog.Scanned(nLocal, nRemote) })
-	if err != nil {
-		return Result{}, fmt.Errorf("scanning %s: %w", dir, err)
+	jobs := max(opts.Jobs, 1)
+
+	// Scan both sides at once.
+	var (
+		mu              sync.Mutex
+		nLocal, nRemote int
+	)
+	scanned := func(local, remote int) {
+		mu.Lock()
+		defer mu.Unlock()
+		nLocal, nRemote = nLocal+local, nRemote+remote
+		prog.Scanned(nLocal, nRemote)
 	}
-	remote, err := ScanRemote(ctx, d, st.Folder, func() { nRemote++; prog.Scanned(nLocal, nRemote) })
+	var (
+		local    Local
+		localErr error
+		scanDone = make(chan struct{})
+	)
+	go func() {
+		defer close(scanDone)
+		local, localErr = ScanLocal(dir, st.Files, func() { scanned(1, 0) })
+	}()
+	remote, err := ScanRemote(ctx, d, st.Folder, jobs, func() { scanned(0, 1) })
+	<-scanDone
+	if localErr != nil {
+		return Result{}, fmt.Errorf("scanning %s: %w", dir, localErr)
+	}
 	if err != nil {
 		return Result{}, err
 	}
 	actions := Plan(local, remote, st.Files, opts.Mode, opts.Force, opts.Now)
 
-	e := &executor{ctx: ctx, d: d, dir: dir, st: st, save: save, remote: remote, opts: opts, prog: prog, res: Result{DryRun: opts.DryRun}}
+	e := &executor{ctx: ctx, d: d, dir: dir, st: st, save: save, remote: remote, opts: opts, jobs: jobs, prog: prog, res: Result{DryRun: opts.DryRun}}
 	if opts.DryRun {
 		prog.Planned(0, 0)
 		e.dryRun(actions)
@@ -161,15 +189,27 @@ func transfers(actions []Action) (n int, bytes int64) {
 }
 
 type executor struct {
-	ctx    context.Context
-	d      gdrive.Drive
-	dir    string
-	st     *state.State
-	save   func(*state.State) error
-	remote Remote // Dirs grows as folders are created on Drive
-	opts   Options
-	prog   Progress
-	res    Result
+	ctx  context.Context
+	d    gdrive.Drive
+	dir  string
+	save func(*state.State) error
+	opts Options
+	jobs int
+	prog Progress
+
+	// mu guards these while transfers run in parallel. Methods that print
+	// or count expect it held.
+	mu       sync.Mutex
+	st       *state.State
+	res      Result
+	dirty    bool      // st has changes that aren't saved
+	lastSave time.Time // when st was last saved
+	renamed  map[string]bool
+
+	// folderMu serializes creating Drive folders, so two uploads into a
+	// new folder don't create it twice. It guards remote.
+	folderMu sync.Mutex
+	remote   Remote // Dirs grows as folders are created on Drive
 }
 
 // changedError means a file changed between the scan and the action; the
@@ -179,24 +219,37 @@ type changedError struct{ msg string }
 func (e *changedError) Error() string { return e.msg }
 
 func (e *executor) dryRun(actions []Action) {
-	for _, a := range e.ordered(actions) {
-		switch a.Kind {
-		case KindDownload:
+	ph := phases(actions)
+	conflict := func(a Action) {
+		e.printConflict(a)
+		if a.Resolution == Unresolved {
+			e.res.Unresolved = append(e.res.Unresolved, a.Path)
+		} else {
+			e.res.Conflicts++
+		}
+	}
+	for _, a := range ph.local {
+		if a.Kind == KindDownload {
 			e.res.Downloaded++
 			e.printDownload(a)
-		case KindUpload:
+		} else {
+			conflict(a)
+		}
+	}
+	for _, a := range ph.drive {
+		switch {
+		case a.Kind == KindUpload:
 			e.res.Uploaded++
 			e.printUpload(a)
-		case KindConflict:
-			e.printConflict(a)
-			if a.Resolution == Unresolved {
-				e.res.Unresolved = append(e.res.Unresolved, a.Path)
-			} else {
-				e.res.Conflicts++
-			}
-		case KindSkip:
-			e.skip(a.Path, a.Note)
+		case a.Resolution == KeepDriveCopy: // KeepBoth was listed with the local phase
+			conflict(a)
 		}
+	}
+	for _, a := range ph.unresolved {
+		conflict(a)
+	}
+	for _, a := range ph.skips {
+		e.skip(a.Path, a.Note)
 	}
 }
 
@@ -215,89 +268,151 @@ func (e *executor) run(local Local, actions []Action) error {
 			delete(e.st.Files, a.Path)
 		}
 	}
-	if err := e.save(e.st); err != nil {
+	if err := e.saveNow(); err != nil {
 		return err
 	}
 
-	// Phase 1 writes local files; phase 2 writes to Drive.
-	renamed := map[string]bool{} // conflicts whose local file became the copy
-	for _, a := range actions {
-		if err := e.ctx.Err(); err != nil {
-			return err
-		}
-		switch {
-		case a.Kind == KindDownload:
-			if e.report(a.Path, e.download(a.Path, *a.Remote, a.Local)) {
-				e.res.Downloaded++
-				e.printDownload(a)
-			}
-		case a.Kind == KindConflict && (a.Resolution == KeepBoth || a.Resolution == KeepLocalCopy):
-			ok, err := e.keepLocalCopy(a)
-			renamed[a.Path] = ok
-			if ok {
-				e.res.Conflicts++
-				e.printConflict(a)
-			}
-			if err != nil {
-				if ok {
-					err = fmt.Errorf("%w (your version is in %s)", err, path.Base(a.Copy))
-				}
-				e.report(a.Path, err)
-			}
-		}
-	}
-	for _, a := range actions {
-		if err := e.ctx.Err(); err != nil {
-			return err
-		}
-		switch {
-		case a.Kind == KindUpload:
-			if e.report(a.Path, e.upload(a.Path, a.Remote)) {
-				e.res.Uploaded++
-				e.printUpload(a)
-			}
-		case a.Kind == KindConflict && a.Resolution == KeepBoth && renamed[a.Path]:
-			e.report(a.Copy, e.upload(a.Copy, nil))
-		case a.Kind == KindConflict && a.Resolution == KeepDriveCopy:
-			if e.report(a.Path, e.keepDriveCopy(a)) {
-				e.res.Conflicts++
-				e.printConflict(a)
-			}
-		}
+	// Downloads and other local writes first, then writes to Drive; each
+	// phase transfers up to e.jobs files at once.
+	ph := phases(actions)
+	e.renamed = map[string]bool{} // conflicts whose local file became the copy
+	e.parallel(ph.local, e.runLocal)
+	if e.ctx.Err() == nil {
+		e.parallel(ph.drive, e.runDrive)
 	}
 
-	for _, a := range actions {
-		if a.Kind == KindConflict && a.Resolution == Unresolved {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	err := e.ctx.Err()
+	if err == nil {
+		for _, a := range ph.unresolved {
 			e.res.Unresolved = append(e.res.Unresolved, a.Path)
 			e.printConflict(a)
 		}
-	}
-	for _, a := range actions {
-		if a.Kind == KindSkip {
+		for _, a := range ph.skips {
 			e.skip(a.Path, a.Note)
 		}
+		e.st.LastSync = e.opts.Now
 	}
-
-	e.st.LastSync = e.opts.Now
-	return e.save(e.st)
+	if serr := e.saveNow(); err == nil {
+		err = serr
+	}
+	return err
 }
 
-// ordered returns actions in the order a real run executes them.
-func (e *executor) ordered(actions []Action) []Action {
-	var phases [4][]Action
-	for _, a := range actions {
-		switch {
-		case a.Kind == KindDownload, a.Kind == KindConflict && (a.Resolution == KeepBoth || a.Resolution == KeepLocalCopy):
-			phases[0] = append(phases[0], a)
-		case a.Kind == KindUpload, a.Kind == KindConflict && a.Resolution == KeepDriveCopy:
-			phases[1] = append(phases[1], a)
-		case a.Kind == KindConflict:
-			phases[2] = append(phases[2], a)
-		case a.Kind == KindSkip:
-			phases[3] = append(phases[3], a)
+// runLocal runs a phase 1 action: a download, or the local half of a
+// conflict.
+func (e *executor) runLocal(a Action) {
+	if a.Kind == KindDownload {
+		err := e.download(a.Path, *a.Remote, a.Local)
+		e.mu.Lock()
+		defer e.mu.Unlock()
+		if e.report(a.Path, err) {
+			e.res.Downloaded++
+			e.printDownload(a)
+		}
+		return
+	}
+	ok, err := e.keepLocalCopy(a)
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.renamed[a.Path] = ok
+	if ok {
+		e.res.Conflicts++
+		e.printConflict(a)
+	}
+	if err != nil {
+		if ok {
+			err = fmt.Errorf("%w (your version is in %s)", err, path.Base(a.Copy))
+		}
+		e.report(a.Path, err)
+	}
+}
+
+// runDrive runs a phase 2 action: an upload, or the Drive half of a
+// conflict.
+func (e *executor) runDrive(a Action) {
+	switch {
+	case a.Kind == KindUpload:
+		err := e.upload(a.Path, a.Remote)
+		e.mu.Lock()
+		defer e.mu.Unlock()
+		if e.report(a.Path, err) {
+			e.res.Uploaded++
+			e.printUpload(a)
+		}
+	case a.Resolution == KeepBoth:
+		e.mu.Lock()
+		renamed := e.renamed[a.Path]
+		e.mu.Unlock()
+		if renamed {
+			err := e.upload(a.Copy, nil)
+			e.mu.Lock()
+			defer e.mu.Unlock()
+			e.report(a.Copy, err)
+		}
+	case a.Resolution == KeepDriveCopy:
+		err := e.keepDriveCopy(a)
+		e.mu.Lock()
+		defer e.mu.Unlock()
+		if e.report(a.Path, err) {
+			e.res.Conflicts++
+			e.printConflict(a)
 		}
 	}
-	return append(append(append(phases[0], phases[1]...), phases[2]...), phases[3]...)
+}
+
+// parallel calls fn for each action, up to e.jobs at a time, and waits for
+// them. Once the context is canceled, it starts no more.
+func (e *executor) parallel(actions []Action, fn func(Action)) {
+	sem := make(chan struct{}, e.jobs)
+	var wg sync.WaitGroup
+	for _, a := range actions {
+		sem <- struct{}{}
+		if e.ctx.Err() != nil {
+			break
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			defer func() { <-sem }()
+			fn(a)
+		}()
+	}
+	wg.Wait()
+}
+
+// actionPhases splits a plan in the order a run executes it.
+type actionPhases struct {
+	local      []Action // downloads and the local half of conflicts
+	drive      []Action // uploads and the Drive half of conflicts
+	unresolved []Action // conflicts left alone
+	skips      []Action
+}
+
+func phases(actions []Action) actionPhases {
+	var ph actionPhases
+	for _, a := range actions {
+		switch {
+		case a.Kind == KindDownload:
+			ph.local = append(ph.local, a)
+		case a.Kind == KindUpload:
+			ph.drive = append(ph.drive, a)
+		case a.Kind == KindSkip:
+			ph.skips = append(ph.skips, a)
+		case a.Kind != KindConflict:
+		case a.Resolution == Unresolved:
+			ph.unresolved = append(ph.unresolved, a)
+		case a.Resolution == KeepBoth:
+			ph.local = append(ph.local, a)
+			ph.drive = append(ph.drive, a)
+		case a.Resolution == KeepLocalCopy:
+			ph.local = append(ph.local, a)
+		case a.Resolution == KeepDriveCopy:
+			ph.drive = append(ph.drive, a)
+		}
+	}
+	return ph
 }
 
 // report prints a failure or a skip for err, and reports whether err is
@@ -307,6 +422,8 @@ func (e *executor) report(p string, err error) bool {
 	switch {
 	case err == nil:
 		return true
+	case e.ctx.Err() != nil && errors.Is(err, e.ctx.Err()):
+		// Interrupted: not a failure of this file. The run reports it.
 	case errors.As(err, &changed):
 		e.skip(p, changed.msg+"; run sync again")
 	default:
@@ -399,8 +516,8 @@ func (e *executor) download(p string, r RemoteFile, want *LocalFile) (err error)
 	if err := e.checkLocal(p, want); err != nil {
 		return err
 	}
-	e.prog.Start(p, r.Size, false)
-	defer e.prog.Done()
+	t := e.prog.Start(p, r.Size, false)
+	defer t.Done()
 	dst := e.path(p)
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 		return err
@@ -428,7 +545,7 @@ func (e *executor) download(p string, r RemoteFile, want *LocalFile) (err error)
 		}
 	}()
 	h := md5.New()
-	if _, err := io.Copy(io.MultiWriter(tmp, h, progressWriter{e.prog}), body); err != nil {
+	if _, err := io.Copy(io.MultiWriter(tmp, h, progressWriter{t}), body); err != nil {
 		return fmt.Errorf("downloading: %w", err)
 	}
 	if sum := hex.EncodeToString(h.Sum(nil)); sum != r.MD5 {
@@ -450,8 +567,7 @@ func (e *executor) download(p string, r RemoteFile, want *LocalFile) (err error)
 	if err != nil {
 		return err
 	}
-	e.setFile(p, r.ID, r.MD5, fi.Size(), fi.ModTime())
-	return e.save(e.st)
+	return e.record(p, r.ID, r.MD5, fi.Size(), fi.ModTime())
 }
 
 // upload sends the local file at p to Drive: as a new version of r, or as a
@@ -479,9 +595,9 @@ func (e *executor) upload(p string, r *RemoteFile) error {
 		return &changedError{"no longer a regular file"}
 	}
 
-	e.prog.Start(p, fi.Size(), true)
-	defer e.prog.Done()
-	content := &hashReader{f: f, h: md5.New(), prog: e.prog}
+	t := e.prog.Start(p, fi.Size(), true)
+	defer t.Done()
+	content := &hashReader{f: f, h: md5.New(), prog: t}
 	var res gdrive.File
 	if r != nil {
 		res, err = e.d.Update(e.ctx, r.ID, content)
@@ -497,8 +613,7 @@ func (e *executor) upload(p string, r *RemoteFile) error {
 	if sum := content.sum(); res.MD5 != sum {
 		return fmt.Errorf("Drive's checksum after upload doesn't match the file (got %s, want %s)", res.MD5, sum)
 	}
-	e.setFile(p, res.ID, res.MD5, fi.Size(), fi.ModTime())
-	return e.save(e.st)
+	return e.record(p, res.ID, res.MD5, fi.Size(), fi.ModTime())
 }
 
 // racyWindow is how much older than the start of the run a file's mtime
@@ -507,7 +622,8 @@ func (e *executor) upload(p string, r *RemoteFile) error {
 // mtime; leaving the mtime out makes the next scan hash it again.
 const racyWindow = 2 * time.Second
 
-// setFile records the synced version of p.
+// setFile records the synced version of p; e.mu must be held while
+// transfers run.
 func (e *executor) setFile(p, id, sum string, size int64, mtime time.Time) {
 	if !mtime.Before(e.opts.Now.Add(-racyWindow)) {
 		mtime = time.Time{}
@@ -515,16 +631,49 @@ func (e *executor) setFile(p, id, sum string, size int64, mtime time.Time) {
 	e.st.Files[p] = state.File{ID: id, MD5: sum, Size: size, MTime: mtime}
 }
 
+// saveEvery limits how often the state file is written while transfers
+// run. A run interrupted before saving is still safe to repeat: files that
+// already match on both sides are only recorded.
+const saveEvery = time.Second
+
+// record notes the synced version of p and saves the state if the last
+// save was long enough ago.
+func (e *executor) record(p, id, sum string, size int64, mtime time.Time) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.setFile(p, id, sum, size, mtime)
+	e.dirty = true
+	if time.Since(e.lastSave) < saveEvery {
+		return nil
+	}
+	return e.saveNow()
+}
+
+// saveNow writes the state; e.mu must be held while transfers run.
+func (e *executor) saveNow() error {
+	if err := e.save(e.st); err != nil {
+		return err
+	}
+	e.dirty, e.lastSave = false, time.Now()
+	return nil
+}
+
 // folderID returns the ID of the Drive folder at the slash-separated path
 // dir, creating it and its parents if needed.
 func (e *executor) folderID(dir string) (string, error) {
+	e.folderMu.Lock()
+	defer e.folderMu.Unlock()
+	return e.folderIDLocked(dir)
+}
+
+func (e *executor) folderIDLocked(dir string) (string, error) {
 	if dir == "." || dir == "" {
 		return e.st.Folder, nil
 	}
 	if id, ok := e.remote.Dirs[dir]; ok {
 		return id, nil
 	}
-	parent, err := e.folderID(path.Dir(dir))
+	parent, err := e.folderIDLocked(path.Dir(dir))
 	if err != nil {
 		return "", err
 	}
@@ -533,7 +682,10 @@ func (e *executor) folderID(dir string) (string, error) {
 		return "", err
 	}
 	e.remote.Dirs[dir] = f.ID
+	e.mu.Lock()
 	e.st.Folders[dir] = f.ID
+	e.dirty = true
+	e.mu.Unlock()
 	return f.ID, nil
 }
 
@@ -571,7 +723,7 @@ func (e *executor) keepDriveCopy(a Action) error {
 type hashReader struct {
 	f    *os.File
 	h    hash.Hash
-	prog Progress
+	prog Transfer
 	read int64
 }
 
@@ -594,7 +746,7 @@ func (r *hashReader) Seek(offset int64, whence int) (int64, error) {
 }
 
 // progressWriter reports what is written to it as progress.
-type progressWriter struct{ prog Progress }
+type progressWriter struct{ prog Transfer }
 
 func (w progressWriter) Write(p []byte) (int, error) {
 	w.prog.Add(int64(len(p)))

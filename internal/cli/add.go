@@ -20,6 +20,7 @@ func newAddCmd() *cobra.Command {
 		mode   string
 		noSync bool
 		force  bool
+		jobs   int
 	)
 	cmd := &cobra.Command{
 		Use:   "add <drive-folder-url> <path>",
@@ -35,6 +36,9 @@ folder, add it to .gitsubsync and .gitignore, and sync it.`,
 			}
 			m, err := syncer.ParseMode(mode)
 			if err != nil {
+				return err
+			}
+			if err := checkJobs(jobs); err != nil {
 				return err
 			}
 			w, err := openWorkspace(ctx)
@@ -112,7 +116,7 @@ folder, add it to .gitsubsync and .gitignore, and sync it.`,
 			if noSync {
 				fmt.Fprintf(out, "💡 Run `git subsync sync %s` to sync it.\n", shellQuote(p))
 			} else {
-				code, err = syncFolder(cmd, w, d, user, entry, syncOptions{now: time.Now()})
+				code, err = syncFolder(cmd, w, d, user, entry, syncOptions{jobs: jobs, now: time.Now()})
 				if err != nil {
 					printErr(cmd.ErrOrStderr(), p, err)
 					code = 1
@@ -128,5 +132,6 @@ folder, add it to .gitsubsync and .gitignore, and sync it.`,
 	cmd.Flags().StringVar(&mode, "mode", repo.DefaultMode, "sync direction: both, download or upload")
 	cmd.Flags().BoolVar(&noSync, "no-sync", false, "only link the folder; don't sync it yet")
 	cmd.Flags().BoolVar(&force, "force", false, "allow a folder that already has files in it")
+	addJobsFlag(cmd, &jobs)
 	return cmd
 }

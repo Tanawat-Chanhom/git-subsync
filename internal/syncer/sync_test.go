@@ -5,12 +5,14 @@ import (
 	"context"
 	"crypto/md5"
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -27,6 +29,7 @@ type env struct {
 	dir   string
 	store *state.Store
 	now   time.Time // of the last run
+	jobs  int
 }
 
 func newEnv(t *testing.T) *env {
@@ -53,7 +56,7 @@ func (e *env) sync(mode Mode, force, dryRun bool) (Result, string) {
 	}
 	var out bytes.Buffer
 	e.now = time.Now()
-	res, err := Sync(context.Background(), e.d, e.dir, st, e.store.Save, Options{Mode: mode, Force: force, DryRun: dryRun, Now: e.now, Out: &out})
+	res, err := Sync(context.Background(), e.d, e.dir, st, e.store.Save, Options{Mode: mode, Force: force, DryRun: dryRun, Now: e.now, Jobs: e.jobs, Out: &out})
 	if err != nil {
 		e.t.Fatalf("Sync: %v\n%s", err, out.String())
 	}
@@ -550,35 +553,65 @@ func TestSummary(t *testing.T) {
 
 // recorder is a Progress that records what it is told.
 type recorder struct {
-	scanned          [2]int
-	planned          int
-	plannedBytes     int64
-	starts           []string
-	added            map[string]int64
-	current          string
-	open             bool
-	unbalancedOrNest bool
+	mu           sync.Mutex
+	scanned      [2]int
+	planned      int
+	plannedBytes int64
+	starts       []string
+	added        map[string]int64
+	open         int // transfers started and not done
+	maxOpen      int
+	unbalanced   bool
 }
 
-func (r *recorder) Scanned(local, remote int) { r.scanned = [2]int{local, remote} }
-func (r *recorder) Planned(n int, b int64)    { r.planned, r.plannedBytes = n, b }
-func (r *recorder) Start(p string, size int64, up bool) {
-	if r.open {
-		r.unbalancedOrNest = true
-	}
-	dir := "down"
-	if up {
-		dir = "up"
-	}
-	r.current, r.open = dir+" "+p, true
-	r.starts = append(r.starts, r.current)
+func (r *recorder) Scanned(local, remote int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.scanned = [2]int{local, remote}
 }
-func (r *recorder) Add(n int64) { r.added[r.current] += n }
-func (r *recorder) Done() {
-	if !r.open {
-		r.unbalancedOrNest = true
+
+func (r *recorder) Planned(n int, b int64) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.planned, r.plannedBytes = n, b
+}
+
+func (r *recorder) Start(p string, size int64, up bool) Transfer {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	name := "down " + p
+	if up {
+		name = "up " + p
 	}
-	r.open = false
+	r.starts = append(r.starts, name)
+	r.open++
+	r.maxOpen = max(r.maxOpen, r.open)
+	return &recTransfer{r: r, name: name}
+}
+
+type recTransfer struct {
+	r    *recorder
+	name string
+	done bool
+}
+
+func (t *recTransfer) Add(n int64) {
+	t.r.mu.Lock()
+	defer t.r.mu.Unlock()
+	if t.r.added == nil {
+		t.r.added = map[string]int64{}
+	}
+	t.r.added[t.name] += n
+}
+
+func (t *recTransfer) Done() {
+	t.r.mu.Lock()
+	defer t.r.mu.Unlock()
+	if t.done {
+		t.r.unbalanced = true
+	}
+	t.done = true
+	t.r.open--
 }
 
 func TestSyncReportsProgress(t *testing.T) {
@@ -614,8 +647,8 @@ func TestSyncReportsProgress(t *testing.T) {
 	if !reflect.DeepEqual(rec.added, wantAdded) {
 		t.Errorf("added = %v\nwant    %v", rec.added, wantAdded)
 	}
-	if rec.unbalancedOrNest || rec.open {
-		t.Error("Start and Done calls don't pair up")
+	if rec.unbalanced || rec.open != 0 || rec.maxOpen != 1 {
+		t.Errorf("transfers don't pair up, or overlap without Jobs (max open %d)", rec.maxOpen)
 	}
 }
 
@@ -629,7 +662,7 @@ func TestHashReaderRewindResetsProgress(t *testing.T) {
 	}
 	defer f.Close()
 	rec := &recorder{added: map[string]int64{}}
-	r := &hashReader{f: f, h: md5.New(), prog: rec}
+	r := &hashReader{f: f, h: md5.New(), prog: &recTransfer{r: rec}}
 	buf := make([]byte, 3)
 	if _, err := r.Read(buf); err != nil {
 		t.Fatal(err)
@@ -643,4 +676,152 @@ func TestHashReaderRewindResetsProgress(t *testing.T) {
 	if rec.added[""] != 5 || r.sum() != md5Hello {
 		t.Fatalf("progress = %d, sum = %s; want 5 and the MD5 of hello", rec.added[""], r.sum())
 	}
+}
+
+// inFlight counts Drive calls running at once, slowing each down so they
+// overlap when run in parallel.
+type inFlight struct {
+	mu       sync.Mutex
+	now, max int
+}
+
+func (f *inFlight) hook(op, _ string) error {
+	if op == "get" || op == "list" || op == "rename" || op == "mkdir" {
+		return nil
+	}
+	f.mu.Lock()
+	f.now++
+	f.max = max(f.max, f.now)
+	f.mu.Unlock()
+	time.Sleep(20 * time.Millisecond)
+	f.mu.Lock()
+	f.now--
+	f.mu.Unlock()
+	return nil
+}
+
+func TestSyncParallel(t *testing.T) {
+	e := newEnv(t)
+	e.jobs = 4
+	docs := e.d.AddFolder(e.root, "docs")
+	for i := range 12 {
+		e.d.AddFile(docs, fmt.Sprintf("remote-%02d.txt", i), fmt.Sprintf("remote %d", i), "")
+		e.write(fmt.Sprintf("new/sub/local-%02d.txt", i), fmt.Sprintf("local %d", i)) // all in one new Drive folder
+	}
+	for i := range 3 {
+		e.d.AddFile(e.root, fmt.Sprintf("c%d.txt", i), "theirs", "")
+		e.write(fmt.Sprintf("c%d.txt", i), "mine")
+	}
+	var f inFlight
+	e.d.Hook = f.hook
+
+	res, out := e.sync(Both, false, false)
+	if res.Downloaded != 12 || res.Uploaded != 12 || res.Conflicts != 3 || res.Failed != 0 {
+		t.Fatalf("res = %+v\n%s", res, out)
+	}
+	if f.max < 2 || f.max > 4 {
+		t.Fatalf("at most %d transfers ran at once, want 2 to 4", f.max)
+	}
+	if n := strings.Count(out, "\n"); n != 27 {
+		t.Fatalf("%d output lines, want 27:\n%s", n, out)
+	}
+	assertTree(t, "Drive", withoutDirs(e.d.Tree(e.root)), withoutDirs(e.localTree()))
+
+	// Twelve uploads into new/sub created each folder once.
+	for _, dir := range []string{"", "new"} {
+		id := e.root
+		if dir != "" {
+			id = e.find(dir)
+		}
+		files, err := e.d.List(context.Background(), id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		names := map[string]int{}
+		for _, f := range files {
+			names[f.Name]++
+		}
+		if names["new"] > 1 || names["sub"] > 1 {
+			t.Fatalf("folder created twice in %q: %v", dir, names)
+		}
+	}
+	e.assertNoop(Both)
+}
+
+func withoutDirs(tree map[string]string) map[string]string {
+	for k := range tree {
+		if strings.HasSuffix(k, "/") {
+			delete(tree, k)
+		}
+	}
+	return tree
+}
+
+func TestScanRemoteParallel(t *testing.T) {
+	d := drivetest.New()
+	root := d.AddFolder("", "Shared")
+	for i := range 6 {
+		dir := d.AddFolder(root, fmt.Sprintf("d%d", i))
+		sub := d.AddFolder(dir, "sub")
+		d.AddFile(sub, "f.txt", fmt.Sprint(i), "")
+	}
+	var f inFlight
+	d.Hook = func(op, id string) error {
+		if op == "list" {
+			return f.hook("download", id) // count lists
+		}
+		return nil
+	}
+	parallel, err := ScanRemote(context.Background(), d, root, 4, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sequential, err := ScanRemote(context.Background(), d, root, 1, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(parallel, sequential) || len(parallel.Files) != 6 {
+		t.Fatalf("parallel scan = %+v\nsequential   = %+v", parallel, sequential)
+	}
+	if f.max < 2 {
+		t.Fatalf("folders were listed one at a time")
+	}
+}
+
+// A canceled run saves what it finished; the next run does the rest.
+func TestSyncCanceledSavesProgress(t *testing.T) {
+	e := newEnv(t)
+	for i := range 6 {
+		e.d.AddFile(e.root, fmt.Sprintf("%d.txt", i), fmt.Sprint(i), "")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	downloads := 0
+	e.d.Hook = func(op, _ string) error {
+		if op == "download" {
+			downloads++
+			if downloads == 3 {
+				cancel()
+			}
+		}
+		return nil
+	}
+	st := state.New(e.root)
+	var out bytes.Buffer
+	_, err := Sync(ctx, e.d, e.dir, st, e.store.Save, Options{Mode: Both, Now: time.Now(), Out: &out})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled\n%s", err, out.String())
+	}
+	saved, err := e.store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := len(saved.Files); n != 2 {
+		t.Fatalf("saved %d files, want the 2 finished before the cancel", n)
+	}
+
+	e.d.Hook = nil
+	if res, _ := e.sync(Both, false, false); res.Downloaded != 4 {
+		t.Fatalf("rerun downloaded %d, want 4", res.Downloaded)
+	}
+	e.assertNoop(Both)
 }

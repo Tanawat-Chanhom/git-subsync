@@ -120,7 +120,7 @@ func TestScanRemote(t *testing.T) {
 	noSum := d.AddFile(root, "nosum.bin", "x", "")
 	d.SetMD5(noSum, "")
 
-	remote, err := ScanRemote(context.Background(), d, root, nil)
+	remote, err := ScanRemote(context.Background(), d, root, 4, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -156,7 +156,7 @@ func TestScanRemoteListError(t *testing.T) {
 		}
 		return nil
 	}
-	if _, err := ScanRemote(context.Background(), d, root, nil); !errors.Is(err, boom) {
+	if _, err := ScanRemote(context.Background(), d, root, 4, nil); !errors.Is(err, boom) {
 		t.Fatalf("err = %v, want boom", err)
 	}
 }

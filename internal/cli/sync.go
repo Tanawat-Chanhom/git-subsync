@@ -20,6 +20,9 @@ folder, with Google Drive. A folder that doesn't exist yet, e.g. in a fresh
 clone, is created and downloaded.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx, out := cmd.Context(), cmd.OutOrStdout()
+			if err := checkJobs(opts.jobs); err != nil {
+				return err
+			}
 			w, err := openWorkspace(ctx)
 			if err != nil {
 				return err
@@ -72,5 +75,6 @@ clone, is created and downloaded.`,
 	}
 	cmd.Flags().BoolVar(&opts.dryRun, "dry-run", false, "print what would happen without changing anything")
 	cmd.Flags().BoolVar(&opts.force, "force", false, "upload mode: upload over conflicts, keeping the Drive version as a _copy")
+	addJobsFlag(cmd, &opts.jobs)
 	return cmd
 }

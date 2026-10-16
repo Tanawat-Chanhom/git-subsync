@@ -4,12 +4,15 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -38,12 +41,13 @@ func newTestRepo(t *testing.T) *testRepo {
 
 	d := drivetest.New()
 	r := &testRepo{t: t, root: root, d: d, folder: d.AddFolder("", "Design")}
-	origDrive, origInteractive := openDrive, interactive
+	origDrive, origInteractive, origJobs := openDrive, interactive, defaultJobs
 	openDrive = func(context.Context, *cobra.Command) (gdrive.Drive, gdrive.User, error) {
 		return d, gdrive.User{DisplayName: "Me", Email: "me@example.com"}, nil
 	}
 	interactive = func() bool { return false }
-	t.Cleanup(func() { openDrive, interactive = origDrive, origInteractive })
+	defaultJobs = 1 // output in plan order; TestSyncJobs runs in parallel
+	t.Cleanup(func() { openDrive, interactive, defaultJobs = origDrive, origInteractive, origJobs })
 	return r
 }
 
@@ -523,6 +527,41 @@ func TestFirstSyncOfFolderWithFilesNeedsConfirmation(t *testing.T) {
 	// Download mode never uploads, so it doesn't ask.
 	r.write(".gitsubsync", "[subsync \"secrets\"]\n\tpath = secrets\n\tfolder = "+other+"\n\tmode = download\n")
 	r.mustCLI(0, "sync")
+}
+
+func TestSyncJobs(t *testing.T) {
+	r := newTestRepo(t)
+	for i := range 10 {
+		r.d.AddFile(r.folder, fmt.Sprintf("remote-%d.txt", i), "r", "")
+		r.write(fmt.Sprintf("p/local-%d.txt", i), "l")
+	}
+	r.mustCLI(0, "add", "--force", "--no-sync", r.folder, "p")
+	var mu sync.Mutex
+	running, most := 0, 0
+	r.d.Hook = func(op, _ string) error {
+		if op != "download" && op != "create" {
+			return nil
+		}
+		mu.Lock()
+		running++
+		most = max(most, running)
+		mu.Unlock()
+		time.Sleep(20 * time.Millisecond)
+		mu.Lock()
+		running--
+		mu.Unlock()
+		return nil
+	}
+	if _, stderr, code := cli(t, "sync", "-j", "40"); code != 1 || !strings.Contains(stderr, "--jobs must be between 1 and 32") {
+		t.Fatalf("-j 40: exit %d, stderr %q", code, stderr)
+	}
+	out := r.mustCLI(0, "sync", "--jobs", "5")
+	if !strings.HasSuffix(out, "✅ 10 downloaded, 10 uploaded\n") || most < 2 || most > 5 {
+		t.Fatalf("at most %d at once\n%s", most, out)
+	}
+	if got := r.driveFiles(); len(got) != 20 {
+		t.Fatalf("Drive = %v", got)
+	}
 }
 
 // A committed symlink must not let a sync write outside the repository.

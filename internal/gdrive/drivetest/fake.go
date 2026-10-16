@@ -162,7 +162,7 @@ func (f *Fake) File(id string) gdrive.File {
 }
 
 func (f *Fake) Get(ctx context.Context, id string) (gdrive.File, error) {
-	if err := f.hook("get", id); err != nil {
+	if err := f.call(ctx, "get", id); err != nil {
 		return gdrive.File{}, err
 	}
 	f.mu.Lock()
@@ -175,7 +175,7 @@ func (f *Fake) Get(ctx context.Context, id string) (gdrive.File, error) {
 }
 
 func (f *Fake) List(ctx context.Context, folderID string) ([]gdrive.File, error) {
-	if err := f.hook("list", folderID); err != nil {
+	if err := f.call(ctx, "list", folderID); err != nil {
 		return nil, err
 	}
 	f.mu.Lock()
@@ -191,7 +191,7 @@ func (f *Fake) List(ctx context.Context, folderID string) ([]gdrive.File, error)
 }
 
 func (f *Fake) Download(ctx context.Context, id string) (io.ReadCloser, error) {
-	if err := f.hook("download", id); err != nil {
+	if err := f.call(ctx, "download", id); err != nil {
 		return nil, err
 	}
 	f.mu.Lock()
@@ -204,7 +204,7 @@ func (f *Fake) Download(ctx context.Context, id string) (io.ReadCloser, error) {
 }
 
 func (f *Fake) Create(ctx context.Context, parentID, name string, content io.ReadSeeker) (gdrive.File, error) {
-	if err := f.hook("create", name); err != nil {
+	if err := f.call(ctx, "create", name); err != nil {
 		return gdrive.File{}, err
 	}
 	data, err := io.ReadAll(content)
@@ -222,7 +222,7 @@ func (f *Fake) Create(ctx context.Context, parentID, name string, content io.Rea
 }
 
 func (f *Fake) Update(ctx context.Context, id string, content io.ReadSeeker) (gdrive.File, error) {
-	if err := f.hook("update", id); err != nil {
+	if err := f.call(ctx, "update", id); err != nil {
 		return gdrive.File{}, err
 	}
 	data, err := io.ReadAll(content)
@@ -241,7 +241,7 @@ func (f *Fake) Update(ctx context.Context, id string, content io.ReadSeeker) (gd
 }
 
 func (f *Fake) Rename(ctx context.Context, id, name string) (gdrive.File, error) {
-	if err := f.hook("rename", name); err != nil {
+	if err := f.call(ctx, "rename", name); err != nil {
 		return gdrive.File{}, err
 	}
 	f.mu.Lock()
@@ -256,7 +256,7 @@ func (f *Fake) Rename(ctx context.Context, id, name string) (gdrive.File, error)
 }
 
 func (f *Fake) CreateFolder(ctx context.Context, parentID, name string) (gdrive.File, error) {
-	if err := f.hook("mkdir", name); err != nil {
+	if err := f.call(ctx, "mkdir", name); err != nil {
 		return gdrive.File{}, err
 	}
 	f.mu.Lock()
@@ -269,11 +269,14 @@ func (f *Fake) CreateFolder(ctx context.Context, parentID, name string) (gdrive.
 	return f.items[id].file, nil
 }
 
-func (f *Fake) hook(op, name string) error {
-	if f.Hook == nil {
-		return nil
+// call runs the hook, then fails like the real client if ctx is done.
+func (f *Fake) call(ctx context.Context, op, name string) error {
+	if f.Hook != nil {
+		if err := f.Hook(op, name); err != nil {
+			return err
+		}
 	}
-	return f.Hook(op, name)
+	return ctx.Err()
 }
 
 // add stores a new item; f.mu must be held.

@@ -88,7 +88,24 @@ func driveFolder(ctx context.Context, d gdrive.Drive, user gdrive.User, id strin
 type syncOptions struct {
 	force  bool
 	dryRun bool
+	jobs   int
 	now    time.Time
+}
+
+// defaultJobs is how many files sync transfers at once by default.
+var defaultJobs = 4
+
+const maxJobs = 32
+
+func addJobsFlag(cmd *cobra.Command, jobs *int) {
+	cmd.Flags().IntVarP(jobs, "jobs", "j", defaultJobs, fmt.Sprintf("files to transfer at once (1-%d)", maxJobs))
+}
+
+func checkJobs(jobs int) error {
+	if jobs < 1 || jobs > maxJobs {
+		return fmt.Errorf("--jobs must be between 1 and %d", maxJobs)
+	}
+	return nil
 }
 
 // syncFolder syncs one entry, prints its actions, summary and any hint,
@@ -149,7 +166,7 @@ func syncFolder(cmd *cobra.Command, w *workspace, d gdrive.Drive, user gdrive.Us
 		}
 	}
 
-	sopts := syncer.Options{Mode: mode, Force: opts.force, DryRun: opts.dryRun, Now: opts.now, Out: out}
+	sopts := syncer.Options{Mode: mode, Force: opts.force, DryRun: opts.dryRun, Now: opts.now, Jobs: opts.jobs, Out: out}
 	if tty, ok := progressTerminal(cmd); ok {
 		lp := newLiveProgress(out, tty, e.Path)
 		defer lp.Close()
