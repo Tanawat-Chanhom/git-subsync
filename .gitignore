@@ -10,3 +10,7 @@
 client_secret_*.json
 /o-auth.json
 /Screenshot *.png
+
+# git-subsync
+/test-subsync/
+/report/web/
