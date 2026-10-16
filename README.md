@@ -2,7 +2,7 @@
 
 A Git extension that keeps a folder in a Git repo in sync with a Google Drive folder, similar to a submodule.
 
-**Status: v0.2.** Link a folder to Google Drive with `add`, then sync it with `sync`, both ways or one way.
+**Status: v0.3.** Link a folder to Google Drive with `add`, then sync it with `sync`, both ways or one way.
 
 ## What's in v0.2
 
@@ -397,7 +397,7 @@ GoReleaser is pinned to v2.18.3 in both workflows. The cask uses `hooks.post.ins
 
 ## Changelog
 
-### Unreleased
+### v0.3.0 (2026-10-16)
 
 - Parallel sync: up to 4 files transfer at once by default. `-j`/`--jobs N` on `sync` and `add` sets it from 1 to 32. Drive subfolders are listed in parallel, and the local scan runs at the same time.
 - The status line shows the oldest running transfer with `+N` for the others, and the number of files finished.
