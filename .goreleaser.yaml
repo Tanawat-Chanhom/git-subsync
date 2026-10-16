@@ -1,0 +1,60 @@
+# yaml-language-server: $schema=https://goreleaser.com/static/schema.json
+version: 2
+
+project_name: git-subsync
+
+builds:
+  - id: git-subsync
+    main: ./cmd/git-subsync
+    binary: git-subsync
+    env:
+      - CGO_ENABLED=0
+    goos: [darwin, linux]
+    goarch: [amd64, arm64]
+    flags:
+      - -trimpath
+    mod_timestamp: "{{ .CommitTimestamp }}"
+    ldflags:
+      - -s -w
+      - -X github.com/Tanawat-Chanhom/git-subsync/internal/version.Version={{ .Version }}
+      - -X github.com/Tanawat-Chanhom/git-subsync/internal/version.Commit={{ .ShortCommit }}
+      - -X github.com/Tanawat-Chanhom/git-subsync/internal/version.Date={{ .Date }}
+      # OAuth client from Actions secrets. envOrDefault keeps local snapshots
+      # working without them; release.yml refuses to run if they are empty.
+      - -X github.com/Tanawat-Chanhom/git-subsync/internal/auth.buildClientID={{ envOrDefault "GOOGLE_CLIENT_ID" "" }}
+      - -X github.com/Tanawat-Chanhom/git-subsync/internal/auth.buildClientSecret={{ envOrDefault "GOOGLE_CLIENT_SECRET" "" }}
+
+archives:
+  - formats: [tar.gz]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - README.md
+      - LICENSE
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  sort: asc
+
+homebrew_casks:
+  - name: tae-subsync
+    binaries: [git-subsync]
+    homepage: https://github.com/Tanawat-Chanhom/git-subsync
+    description: Git extension that syncs a repo folder with a Google Drive folder
+    repository:
+      owner: Tanawat-Chanhom
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    commit_msg_template: "Update {{ .ProjectName }} cask to {{ .Tag }}"
+    # The binary is not signed or notarized; drop the quarantine attribute so
+    # Gatekeeper does not block it.
+    hooks:
+      post:
+        install: |
+          if system_command("/usr/bin/xattr", args: ["-h"]).exit_status == 0
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/git-subsync"]
+          end
+    zap:
+      trash:
+        - "~/Library/Application Support/git-subsync"
