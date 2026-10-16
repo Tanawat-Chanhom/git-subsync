@@ -75,6 +75,22 @@ func TestClientGet(t *testing.T) {
 	}
 }
 
+func TestClientEmptyFileMD5(t *testing.T) {
+	c := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, 200, `{"files":[
+			{"id":"1","name":".gitkeep","mimeType":"application/octet-stream","size":"0"},
+			{"id":"2","name":"Doc","mimeType":"application/vnd.google-apps.document"},
+			{"id":"3","name":"dir","mimeType":"application/vnd.google-apps.folder"}]}`)
+	})
+	files, err := c.List(context.Background(), "F1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if files[0].MD5 != emptyMD5 || files[1].MD5 != "" || files[2].MD5 != "" {
+		t.Fatalf("files = %+v", files)
+	}
+}
+
 func TestClientGetNoAccess(t *testing.T) {
 	for _, tc := range []struct {
 		code   int

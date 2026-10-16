@@ -289,5 +289,11 @@ func fromAPI(f *drive.File) File {
 	if f.Capabilities != nil {
 		out.CanAddChildren = f.Capabilities.CanAddChildren
 	}
+	if out.MD5 == "" && out.Size == 0 && !strings.HasPrefix(out.MimeType, "application/vnd.google-apps.") {
+		out.MD5 = emptyMD5 // in case Drive leaves it out for empty files
+	}
 	return out
 }
+
+// emptyMD5 is the MD5 of no bytes.
+const emptyMD5 = "d41d8cd98f00b204e9800998ecf8427e"
