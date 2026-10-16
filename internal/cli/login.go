@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"os"
 
@@ -18,27 +19,9 @@ func newLoginCmd() *cobra.Command {
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx := cmd.Context()
-			cc, err := auth.ResolveClientConfig(os.Getenv)
-			if err != nil {
+			if err := signIn(ctx, cmd, noBrowser); err != nil {
 				return err
 			}
-			store, err := newStore()
-			if err != nil {
-				return err
-			}
-
-			opts := auth.LoginOptions{Out: cmd.ErrOrStderr()}
-			if !noBrowser {
-				opts.OpenBrowser = auth.OpenBrowser
-			}
-			tok, err := auth.Login(ctx, auth.OAuthConfig(cc), opts)
-			if err != nil {
-				return err
-			}
-			if err := store.Save(tok); err != nil {
-				return err
-			}
-
 			svc, err := driveService(ctx)
 			if err != nil {
 				return err
@@ -53,4 +36,26 @@ func newLoginCmd() *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&noBrowser, "no-browser", false, "print the login URL instead of opening a browser")
 	return cmd
+}
+
+// signIn runs the browser sign-in and saves the token. Progress goes to
+// stderr.
+func signIn(ctx context.Context, cmd *cobra.Command, noBrowser bool) error {
+	cc, err := auth.ResolveClientConfig(os.Getenv)
+	if err != nil {
+		return err
+	}
+	store, err := newStore()
+	if err != nil {
+		return err
+	}
+	opts := auth.LoginOptions{Out: cmd.ErrOrStderr()}
+	if !noBrowser {
+		opts.OpenBrowser = auth.OpenBrowser
+	}
+	tok, err := auth.Login(ctx, auth.OAuthConfig(cc), opts)
+	if err != nil {
+		return err
+	}
+	return store.Save(tok)
 }
