@@ -67,10 +67,18 @@ func LoadConfig(ctx context.Context, root string) ([]Entry, error) {
 		}
 	}
 
+	// .gitsubsync comes from whoever committed it, so paths are checked
+	// as strictly as `add` checks them.
 	result := make([]Entry, 0, len(entries))
 	for _, e := range entries {
 		if e.Path == "" {
 			return nil, fmt.Errorf("%s: [subsync %q] has no path", ConfigFile, e.Name)
+		}
+		if p, err := CleanPath(root, e.Path); err != nil || p != e.Path {
+			return nil, fmt.Errorf("%s: [subsync %q] has an invalid path %q; it must be a clean path inside the repository, relative to its root", ConfigFile, e.Name, e.Path)
+		}
+		if other, ok := Overlapping(result, e.Path); ok {
+			return nil, fmt.Errorf("%s: %s and %s overlap", ConfigFile, other.Path, e.Path)
 		}
 		if e.Folder == "" {
 			return nil, fmt.Errorf("%s: [subsync %q] has no folder", ConfigFile, e.Name)

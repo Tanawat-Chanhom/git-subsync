@@ -125,6 +125,9 @@ func syncFolder(cmd *cobra.Command, w *workspace, d gdrive.Drive, user gdrive.Us
 	}
 	st.FolderName = folder.Name
 
+	if err := repo.CheckNoSymlinks(w.root, e.Path); err != nil {
+		return 1, err
+	}
 	dir := w.dir(e.Path)
 	switch fi, err := os.Lstat(dir); {
 	case errors.Is(err, fs.ErrNotExist):

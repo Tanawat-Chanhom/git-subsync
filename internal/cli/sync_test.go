@@ -473,6 +473,30 @@ func TestSyncErrors(t *testing.T) {
 	}
 }
 
+// A committed symlink must not let a sync write outside the repository.
+func TestSyncRefusesSymlinkedPath(t *testing.T) {
+	r := newTestRepo(t)
+	r.d.AddFile(r.folder, "a.txt", "a", "")
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(r.root, "shared")); err != nil {
+		t.Fatal(err)
+	}
+	if _, stderr, code := cli(t, "add", r.folder, "shared/design"); code != 1 || !strings.Contains(stderr, "shared is a symbolic link") {
+		t.Fatalf("add: exit %d, stderr %q", code, stderr)
+	}
+
+	r.write(".gitsubsync", "[subsync \"shared/design\"]\n\tpath = shared/design\n\tfolder = "+r.folder+"\n")
+	if _, stderr, code := cli(t, "sync"); code != 1 || !strings.Contains(stderr, "shared is a symbolic link") {
+		t.Fatalf("sync: exit %d, stderr %q", code, stderr)
+	}
+	if _, stderr, code := cli(t, "remove", "--delete-files", "shared/design"); code != 1 || !strings.Contains(stderr, "shared is a symbolic link") {
+		t.Fatalf("remove: exit %d, stderr %q", code, stderr)
+	}
+	if entries, _ := os.ReadDir(outside); len(entries) != 0 {
+		t.Fatalf("wrote outside the repo: %v", entries)
+	}
+}
+
 func TestCommandsOutsideRepo(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("GIT_CEILING_DIRECTORIES", filepath.Dir(dir))

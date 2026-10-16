@@ -131,6 +131,46 @@ func TestCleanPath(t *testing.T) {
 	}
 }
 
+func TestCheckNoSymlinks(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "real", "dir"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(root, "link")); err != nil {
+		t.Fatal(err)
+	}
+	for p, wantErr := range map[string]bool{
+		"real":           false,
+		"real/dir":       false,
+		"real/dir/new/x": false,
+		"missing/x":      false,
+		"link":           true,
+		"link/sub":       true,
+	} {
+		if err := CheckNoSymlinks(root, p); (err != nil) != wantErr {
+			t.Errorf("CheckNoSymlinks(%q) = %v, want error %v", p, err, wantErr)
+		}
+	}
+}
+
+func TestLoadConfigRejectsUnsafePaths(t *testing.T) {
+	ctx := context.Background()
+	root := initRepo(t)
+	for _, tc := range []struct{ content, want string }{
+		{"[subsync \"x\"]\n\tpath = ../../.ssh\n\tfolder = F\n", "invalid path"},
+		{"[subsync \"x\"]\n\tpath = /etc\n\tfolder = F\n", "invalid path"},
+		{"[subsync \"x\"]\n\tpath = a/../b\n\tfolder = F\n", "invalid path"},
+		{"[subsync \"x\"]\n\tpath = .git/hooks\n\tfolder = F\n", "invalid path"},
+		{"[subsync \"a\"]\n\tpath = a\n\tfolder = F\n[subsync \"b\"]\n\tpath = a/b\n\tfolder = G\n", "a and a/b overlap"},
+	} {
+		writeFile(t, filepath.Join(root, ConfigFile), tc.content)
+		if _, err := LoadConfig(ctx, root); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%q: err = %v, want %q", tc.content, err, tc.want)
+		}
+	}
+}
+
 func TestConfigRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	root := initRepo(t)

@@ -7,6 +7,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -98,4 +100,26 @@ func CleanPath(root, arg string) (string, error) {
 		}
 	}
 	return p, nil
+}
+
+// CheckNoSymlinks returns an error if the slash-separated path p, or a
+// folder on the way to it from root, is a symbolic link, so nothing synced
+// there can end up outside the repository. Missing parts are fine.
+func CheckNoSymlinks(root, p string) error {
+	cur := root
+	for _, seg := range strings.Split(p, "/") {
+		cur = filepath.Join(cur, seg)
+		fi, err := os.Lstat(cur)
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if fi.Mode()&fs.ModeSymlink != 0 {
+			rel, _ := filepath.Rel(root, cur)
+			return fmt.Errorf("%s is a symbolic link; git-subsync only syncs real folders inside the repository", filepath.ToSlash(rel))
+		}
+	}
+	return nil
 }

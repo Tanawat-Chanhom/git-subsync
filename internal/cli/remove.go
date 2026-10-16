@@ -28,6 +28,11 @@ never changed.`,
 			if err != nil {
 				return err
 			}
+			if deleteFiles {
+				if err := repo.CheckNoSymlinks(w.root, e.Path); err != nil {
+					return err
+				}
+			}
 			store := w.store(e.Path)
 			unlock, err := store.Lock()
 			if err != nil {

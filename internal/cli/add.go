@@ -51,6 +51,9 @@ folder, add it to .gitsubsync and .gitignore, and sync it.`,
 				}
 				return fmt.Errorf("%s overlaps %s, which is already linked", p, e.Path)
 			}
+			if err := repo.CheckNoSymlinks(w.root, p); err != nil {
+				return err
+			}
 			tracked, err := repo.IsTracked(ctx, w.root, p)
 			if err != nil {
 				return err
