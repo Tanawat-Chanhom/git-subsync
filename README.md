@@ -429,3 +429,5 @@ GoReleaser is pinned to v2.18.3 in both workflows. The cask uses `hooks.post.ins
 ## License
 
 [MIT](LICENSE)
+
+<!-- pipeline revert test -->
