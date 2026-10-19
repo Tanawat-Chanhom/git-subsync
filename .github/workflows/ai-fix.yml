@@ -99,7 +99,7 @@ jobs:
                 | "# " + .title + "\n\n" + (.body // "") + "\n\n## Comments\n"
                   + ([.comments[]
                       | select((.authorAssociation | IN("OWNER", "MEMBER", "COLLABORATOR"))
-                               or .author.login == $bot or .author.login == $slug)
+                               or (.author.login | sub("^app/"; "") | sub("\\[bot\\]$"; "")) == $slug)
                       | .body] | join("\n---\n"))' \
             > .ai-context/issue.md
           git checkout -b "ai-fix/issue-${ISSUE_NUMBER}"
