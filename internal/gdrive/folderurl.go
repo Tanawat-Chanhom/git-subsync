@@ -14,6 +14,7 @@ var idPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{10,}$`)
 // It accepts .../drive/folders/<id>, .../drive/u/<n>/folders/<id> (with
 // any query string) and .../open?id=<id>.
 func ParseFolderID(s string) (string, error) {
+	s = strings.TrimSpace(s)
 	if idPattern.MatchString(s) {
 		return s, nil
 	}

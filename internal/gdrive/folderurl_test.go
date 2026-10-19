@@ -16,6 +16,8 @@ func TestParseFolderID(t *testing.T) {
 		"https://drive.google.com/open?id=" + id + "&usp=sharing",
 		"drive.google.com/drive/folders/" + id,
 		"http://drive.google.com/drive/folders/" + id,
+		"  https://drive.google.com/drive/folders/" + id + "\n",
+		"\t" + id + " ",
 	} {
 		got, err := ParseFolderID(in)
 		if err != nil {
