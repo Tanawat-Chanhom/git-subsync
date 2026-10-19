@@ -164,7 +164,7 @@ jobs:
                 | "# " + .title + "\n\n" + (.body // "") + "\n\n## Comments\n"
                   + ([.comments[]
                       | select((.authorAssociation | IN("OWNER", "MEMBER", "COLLABORATOR"))
-                               or .author.login == $bot or .author.login == $slug)
+                               or (.author.login | sub("^app/"; "") | sub("\\[bot\\]$"; "")) == $slug)
                       | .body] | join("\n---\n"))' \
             > .ai-context/issue.md
           gh pr view "$PR_NUMBER" --json title,body \
@@ -269,7 +269,7 @@ jobs:
           # นับเฉพาะคอมเมนต์ที่ bot ของเราเขียน คนนอกแทรก marker ปลอมไม่ได้
           ROUNDS=$(gh issue view "$ISSUE_NUMBER" --json comments \
             | jq --arg bot "$AI_BOT_LOGIN" '($bot | sub("\\[bot\\]$"; "")) as $slug
-                | [.comments[] | select(.author.login == $bot or .author.login == $slug)
+                | [.comments[] | select((.author.login | sub("^app/"; "") | sub("\\[bot\\]$"; "")) == $slug)
                                | select(.body | contains("<!-- ai-review-feedback -->"))] | length')
 
           if [[ "$LABELS" == *",human-approved,"* ]]; then
