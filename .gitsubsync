@@ -2,7 +2,3 @@
 	path = test-subsync
 	folder = 1ESFvw_SYXPlV8lg8tb2hHXQeC0GHpE1v
 	mode = both
-[subsync "report/web"]
-	path = report/web
-	folder = 1OdXdLDe87p3178-gX4XnoMr4m9GJ7Aic
-	mode = both

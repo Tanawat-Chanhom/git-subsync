@@ -13,4 +13,3 @@ client_secret_*.json
 
 # git-subsync
 /test-subsync/
-/report/web/
