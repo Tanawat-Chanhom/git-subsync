@@ -32,3 +32,23 @@ jobs:
           distribution: goreleaser
           version: v2.18.3
           args: check
+
+  # Single check for the staging ruleset to require ("test"), so the AI bug-fix
+  # pipeline doesn't depend on matrix job names. Runs even when a job above fails,
+  # because a skipped required check would count as passing.
+  ci-result:
+    name: test
+    if: always()
+    needs: [test, goreleaser-check]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check all CI jobs passed
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          for r in $RESULTS; do
+            if [ "$r" != "success" ]; then
+              echo "::error::A CI job finished with: $r"
+              exit 1
+            fi
+          done

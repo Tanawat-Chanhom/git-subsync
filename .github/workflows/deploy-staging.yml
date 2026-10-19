@@ -1,0 +1,241 @@
+# Deploy staging — deploy ทุกครั้งที่มี push เข้า staging แล้วรัน smoke test
+#   ผ่าน    → ปิด issue ที่ PR ai-fix/issue-N แก้ ติด fixed-on-staging และแจ้งผู้แจ้งผ่าน Apps Script
+#   ไม่ผ่าน → เปิด revert PR (revert/<sha>) พร้อม auto-merge และติด needs-human
+#             ถ้า commit ที่พังเป็น revert อยู่แล้ว หรือรันด้วยมือ จะแจ้งเตือนอย่างเดียว (กันลูป)
+#
+# Production ไม่ deploy อัตโนมัติ ให้คน promote เอง
+#
+# ปลายทาง staging ยังไม่ได้เลือก: ตั้ง DEPLOY_COMMAND และ SMOKE_TEST_COMMAND ใน repository variables
+# secret ที่ใช้ deploy ให้เก็บใน environment "staging" แล้วส่งเข้า step Deploy ทาง env
+
+name: Deploy staging
+
+on:
+  push:
+    branches: [staging]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-staging
+  cancel-in-progress: false
+
+env:
+  GH_REPO: ${{ github.repository }}
+  BASE_BRANCH: ${{ vars.BASE_BRANCH }}
+  DEPLOY_COMMAND: ${{ vars.DEPLOY_COMMAND }}
+  SMOKE_TEST_COMMAND: ${{ vars.SMOKE_TEST_COMMAND }}
+  AI_BOT_APP_ID: ${{ vars.AI_BOT_APP_ID }}
+  APPS_SCRIPT_NOTIFY_URL: ${{ vars.APPS_SCRIPT_NOTIFY_URL }}
+  NEEDS_HUMAN_MENTION: ${{ vars.NEEDS_HUMAN_MENTION }}
+
+jobs:
+  deploy:
+    name: Deploy and smoke test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: staging
+
+    permissions:
+      contents: read
+
+    steps:
+      - name: Check config
+        run: |
+          missing=0
+          for name in BASE_BRANCH DEPLOY_COMMAND SMOKE_TEST_COMMAND; do
+            if [ -z "${!name}" ]; then
+              echo "::error::Repository variable $name is not set (see ai-pipeline/SETUP.md)"
+              missing=1
+            fi
+          done
+          exit $missing
+
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@v7
+        if: hashFiles('go.mod') != ''
+        with:
+          go-version-file: go.mod
+          cache: false
+      - uses: actions/setup-node@v4
+        if: hashFiles('package.json') != ''
+        with:
+          node-version: lts/*
+
+      - name: Deploy
+        # env:
+        #   DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}   # secret ของปลายทาง ใส่เมื่อเลือกปลายทางแล้ว
+        run: eval "$DEPLOY_COMMAND"
+
+      - name: Smoke test
+        run: eval "$SMOKE_TEST_COMMAND"
+
+  # ---- ผ่าน: ปิด issue ที่ PR นี้แก้ และแจ้งผู้แจ้ง ----
+  on-success:
+    name: Close fixed issue
+    needs: deploy
+    if: success() && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: read
+
+    steps:
+      - name: Close issue and notify reporter
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NOTIFY_SECRET: ${{ secrets.APPS_SCRIPT_NOTIFY_SECRET }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          HEAD_REF=$(gh api "repos/$GH_REPO/commits/$SHA/pulls" --jq '[.[] | select(.merged_at != null)][0].head.ref // empty')
+          echo "PR branch: ${HEAD_REF:-ไม่มี}"
+          ISSUE_NUMBER="${HEAD_REF#ai-fix/issue-}"
+          if [ "$ISSUE_NUMBER" = "$HEAD_REF" ] || [ -z "$ISSUE_NUMBER" ]; then
+            echo "ไม่ใช่ PR ของ AI(2) ไม่มี issue ต้องปิด"; exit 0
+          fi
+          case "$ISSUE_NUMBER" in *[!0-9]*) echo "::error::อ่านเลข issue จากชื่อ branch ไม่ได้"; exit 1;; esac
+
+          gh issue comment "$ISSUE_NUMBER" --body "แก้แล้ว และ deploy ขึ้น staging ผ่าน smoke test (commit $SHA)"
+          gh issue edit "$ISSUE_NUMBER" --remove-label ai-pr-open --add-label fixed-on-staging || true
+          gh issue close "$ISSUE_NUMBER" --reason completed
+
+          REPORT_ID=$(gh issue view "$ISSUE_NUMBER" --json body --jq '.body' \
+            | sed -n 's/.*<!-- report-id: \([A-Za-z0-9_-]\{1,64\}\) -->.*/\1/p' | head -n1)
+          if [ -z "$REPORT_ID" ]; then echo "issue ไม่ได้มาจากฟอร์ม ไม่ต้องแจ้งผู้แจ้ง"; exit 0; fi
+          if [ -z "$APPS_SCRIPT_NOTIFY_URL" ] || [ -z "$NOTIFY_SECRET" ]; then
+            echo "::warning::ยังไม่ได้ตั้ง APPS_SCRIPT_NOTIFY_URL หรือ APPS_SCRIPT_NOTIFY_SECRET ข้ามการแจ้งผู้แจ้ง"; exit 0
+          fi
+          jq -n --arg secret "$NOTIFY_SECRET" --arg id "$REPORT_ID" \
+            '{secret: $secret, report_id: $id, kind: "fixed", message: "ปัญหาที่คุณแจ้งได้รับการแก้ไขแล้ว และขึ้นระบบทดสอบ (staging) เรียบร้อย"}' \
+            > "$RUNNER_TEMP/notify.json"
+          # Apps Script ตอบ 302 ให้ตามไปอ่านผลด้วย GET ห้ามใช้ -X POST เพราะ curl จะ POST ซ้ำตอนตาม redirect
+          curl -fsSL --data-binary @"$RUNNER_TEMP/notify.json" -H 'Content-Type: application/json' "$APPS_SCRIPT_NOTIFY_URL" \
+            | jq -e '.ok == true' || echo "::warning::แจ้งผู้แจ้งไม่สำเร็จ"
+
+  # ---- ไม่ผ่าน: เปิด revert PR หรือแจ้งเตือนอย่างเดียว ----
+  on-failure:
+    name: Revert or alert
+    needs: deploy
+    if: failure()
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: read
+
+    steps:
+      - name: Inspect failed commit
+        id: inspect
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.sha }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          PR=$(gh api "repos/$GH_REPO/commits/$SHA/pulls" --jq '[.[] | select(.merged_at != null)][0] // {}')
+          HEAD_REF=$(jq -r '.head.ref // ""' <<<"$PR")
+          PR_TITLE=$(jq -r '.title // ""' <<<"$PR")
+          MESSAGE=$(gh api "repos/$GH_REPO/commits/$SHA" --jq '.commit.message' | head -n1)
+
+          ISSUE=""
+          case "$HEAD_REF" in ai-fix/issue-*) ISSUE="${HEAD_REF#ai-fix/issue-}";; esac
+          case "$ISSUE" in *[!0-9]*) ISSUE="";; esac
+
+          if [ "$EVENT" != "push" ]; then
+            ACTION=alert; WHY="deploy ที่สั่งด้วยมือไม่ผ่าน"
+          elif [[ "$HEAD_REF" == revert/* || "$MESSAGE" == Revert* ]]; then
+            ACTION=alert; WHY="commit ที่พังเป็น revert อยู่แล้ว ไม่ revert ซ้ำ"
+          else
+            ACTION=revert; WHY="deploy หรือ smoke test ไม่ผ่าน"
+          fi
+          {
+            echo "action=$ACTION"
+            echo "why=$WHY"
+            echo "issue=$ISSUE"
+            echo "title=${PR_TITLE:-$MESSAGE}"
+          } >> "$GITHUB_OUTPUT"
+          echo "Action: $ACTION — $WHY"
+
+      - name: Create GitHub App token
+        id: app-token
+        if: steps.inspect.outputs.action == 'revert'
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.AI_BOT_APP_ID }}
+          private-key: ${{ secrets.AI_BOT_PRIVATE_KEY }}
+
+      - name: Checkout
+        if: steps.inspect.outputs.action == 'revert'
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2
+          persist-credentials: false
+
+      # ใช้ PR แทนการ push ตรงเข้า staging เพื่อไม่ต้องให้ bot ข้าม ruleset
+      - name: Open revert PR
+        id: revert
+        if: steps.inspect.outputs.action == 'revert'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          SHA: ${{ github.sha }}
+          TITLE: ${{ steps.inspect.outputs.title }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          BRANCH="revert/${SHA}"
+          git config user.name "ai-fix-bot"
+          git config user.email "ai-fix-bot@users.noreply.github.com"
+          # squash merge มี parent เดียว ถ้าเป็น merge commit ให้ revert เทียบกับ parent แรก
+          if [ "$(git rev-list --parents -n1 HEAD | wc -w)" -gt 2 ]; then
+            git -c core.hooksPath=/dev/null revert --no-edit -m 1 HEAD
+          else
+            git -c core.hooksPath=/dev/null revert --no-edit HEAD
+          fi
+          git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "HEAD:refs/heads/${BRANCH}" --force
+
+          printf 'Revert %s อัตโนมัติ เพราะ deploy staging หรือ smoke test ไม่ผ่าน\n\nLog: %s\n' "$SHA" "$RUN_URL" > "$RUNNER_TEMP/body.md"
+          PR_URL=$(gh pr list --head "$BRANCH" --state open --json url --jq '.[0].url // empty')
+          if [ -z "$PR_URL" ]; then
+            PR_URL=$(gh pr create --base "$BASE_BRANCH" --head "$BRANCH" \
+              --title "Revert \"$(cut -c1-60 <<<"$TITLE")\"" --body-file "$RUNNER_TEMP/body.md")
+          fi
+          gh pr merge "$PR_URL" --auto --squash
+          echo "pr=$PR_URL" >> "$GITHUB_OUTPUT"
+
+      - name: Alert
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ACTION: ${{ steps.inspect.outputs.action }}
+          WHY: ${{ steps.inspect.outputs.why }}
+          ISSUE: ${{ steps.inspect.outputs.issue }}
+          REVERT_PR: ${{ steps.revert.outputs.pr }}
+          SHA: ${{ github.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -uo pipefail
+          MSG="Deploy staging ไม่ผ่าน ($SHA): ${WHY:-ตรวจสอบ commit ไม่สำเร็จ}"
+          if [ -n "$REVERT_PR" ]; then
+            MSG="$MSG — เปิด revert PR พร้อม auto-merge แล้ว: $REVERT_PR"
+          elif [ "$ACTION" = "revert" ]; then
+            MSG="$MSG — เปิด revert PR ไม่สำเร็จ ต้อง revert เอง"
+          fi
+          MSG="$MSG $NEEDS_HUMAN_MENTION
+
+          Log: $RUN_URL"
+
+          if [ -n "$ISSUE" ]; then
+            gh issue edit "$ISSUE" --add-label needs-human
+            gh issue comment "$ISSUE" --body "$MSG"
+          else
+            gh issue create --title "Deploy staging ไม่ผ่าน: ${SHA:0:7}" --body "$MSG" --label needs-human
+          fi
