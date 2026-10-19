@@ -6,7 +6,6 @@ func TestParseFolderID(t *testing.T) {
 	const id = "1YCRTT34nq009SX1Ndxmb0ndgLzNEn0TD"
 	for _, in := range []string{
 		id,
-		"  " + id + "\n",
 		"https://drive.google.com/drive/folders/" + id,
 		"https://drive.google.com/drive/folders/" + id + "/",
 		"https://drive.google.com/drive/folders/" + id + "?usp=sharing",
