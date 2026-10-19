@@ -252,7 +252,7 @@ func TestAddSyncBothMode(t *testing.T) {
 
 	out = r.mustCLI(0, "list")
 	lines := strings.Split(strings.TrimSpace(out), "\n")
-	if len(lines) != 2 || !strings.HasPrefix(lines[0], "PATH ") || !strings.Contains(lines[1], "test-git-sync  both  Design") || strings.Contains(lines[1], "never") {
+	if len(lines) != 2 || !strings.HasPrefix(lines[0], "FOLDER ") || !strings.Contains(lines[1], "test-git-sync  both  Design") || strings.Contains(lines[1], "never") {
 		t.Fatalf("list:\n%s", out)
 	}
 }
@@ -365,7 +365,7 @@ func TestRemove(t *testing.T) {
 	r.write(".gitignore", "/dist\n")
 	r.mustCLI(0, "add", r.folder, "keep")
 	r.mustCLI(0, "add", "--no-sync", r.folder, "drop")
-	if out := r.mustCLI(0, "list"); !strings.Contains(out, "drop  both  Design        never") {
+	if out := r.mustCLI(0, "list"); !strings.Contains(out, "drop    both  Design        never") {
 		t.Fatalf("list:\n%s", out)
 	}
 	r.mustCLI(0, "sync", "drop")

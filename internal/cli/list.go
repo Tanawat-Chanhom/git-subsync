@@ -22,7 +22,7 @@ func newListCmd() *cobra.Command {
 				return err
 			}
 			tw := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 0, 2, ' ', 0)
-			fmt.Fprintln(tw, "PATH\tMODE\tDRIVE FOLDER\tLAST SYNC")
+			fmt.Fprintln(tw, "FOLDER\tMODE\tDRIVE FOLDER\tLAST SYNC")
 			for _, e := range w.entries {
 				folder, last := e.Folder, "never"
 				st, err := w.store(e.Path).Load()
